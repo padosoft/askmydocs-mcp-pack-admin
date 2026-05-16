@@ -8,6 +8,5 @@
 /test-results/
 /coverage/
 composer.lock
-package-lock.json
 *.log
 .DS_Store
