@@ -16,3 +16,10 @@ test('audit drilldown opens the drawer over /audit/:id', async ({ page }) => {
 
   await expect(page.getByText('aud_search_142ms').first()).toBeVisible();
 });
+
+test('audit drilldown surfaces the fixture banner when id has no real record', async ({ page }) => {
+  await page.goto('/audit/aud_does_not_exist_in_seed');
+
+  await expect(page.getByTestId('audit-drilldown-fixture-banner')).toBeVisible();
+  await expect(page.getByTestId('audit-drilldown-fixture-banner')).toContainText('aud_does_not_exist_in_seed');
+});
