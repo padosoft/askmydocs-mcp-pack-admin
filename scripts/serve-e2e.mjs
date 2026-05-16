@@ -54,14 +54,23 @@ window.__MCP_PACK_ADMIN__ = {
 </html>`;
 }
 
+// Cache the manifest by its mtime so iterative Vite rebuilds (common during
+// E2E authoring) get picked up automatically without restarting the server.
+// The cost of re-reading a ~200-byte file is negligible against the SPA
+// payload itself, and avoids 404s on hashed assets after a rebuild.
 let manifestCache = null;
+let manifestMtime = 0;
 async function getManifest() {
-  if (manifestCache) return manifestCache;
-  const raw = await readFile(join(ASSET_DIR, '.vite/manifest.json'), 'utf8');
+  const manifestPath = join(ASSET_DIR, '.vite/manifest.json');
+  const s = await stat(manifestPath);
+  if (manifestCache && s.mtimeMs === manifestMtime) return manifestCache;
+  const raw = await readFile(manifestPath, 'utf8');
   const j = JSON.parse(raw);
-  manifestCache = j['resources/js/main.tsx'];
-  if (!manifestCache) throw new Error('manifest missing main.tsx entry');
-  return manifestCache;
+  const entry = j['resources/js/main.tsx'];
+  if (!entry) throw new Error('manifest missing main.tsx entry');
+  manifestCache = entry;
+  manifestMtime = s.mtimeMs;
+  return entry;
 }
 
 const server = createServer(async (req, res) => {

@@ -5,6 +5,11 @@ import { resolve } from 'path';
 export default defineConfig({
   plugins: [react()],
   base: '/vendor/mcp-pack-admin/',
+  // outDir lives inside Laravel's `public/` to make the built bundle
+  // directly servable; publicDir must be disabled (default is `public/`)
+  // because otherwise Vite tries to recursively copy `public/` into the
+  // outDir on every build, producing a runaway nested path.
+  publicDir: false,
   build: {
     outDir: 'public/vendor/mcp-pack-admin',
     emptyOutDir: true,

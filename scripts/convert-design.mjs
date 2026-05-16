@@ -10,7 +10,19 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SRC = process.env.DESIGN_SRC || 'C:/Users/lopad/Downloads/askmydocs-mcp-pack-web-panel/project';
+// SRC must be provided via `DESIGN_SRC` env var pointing at the Claude
+// Design prototype directory (the one that holds `app.jsx`, `ui.jsx`,
+// `styles.css`, …). We do NOT default to a developer-specific path: it
+// would silently succeed on one machine and fail confusingly on another.
+const SRC = process.env.DESIGN_SRC;
+if (!SRC) {
+  console.error(
+    'DESIGN_SRC env var is required.\n' +
+    'Point it at the prototype directory containing app.jsx + styles.css, e.g.:\n' +
+    '  DESIGN_SRC=/path/to/askmydocs-mcp-pack-web-panel/project node scripts/convert-design.mjs',
+  );
+  process.exit(1);
+}
 const DST = path.resolve(__dirname, '../resources/js');
 
 if (!fs.existsSync(SRC)) {

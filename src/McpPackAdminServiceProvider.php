@@ -43,10 +43,16 @@ class McpPackAdminServiceProvider extends ServiceProvider
             // keeps `php artisan vendor:publish` honest before that point: if
             // the built tree is absent, the tag is simply not registered
             // instead of mapping a non-existent source.
+            //
+            // The destination tracks `config('mcp-pack-admin.asset_path')` so
+            // operators who customise the asset path (e.g. multi-tenant hosts
+            // mounting under a non-default subdir) get the bundle copied to
+            // the same location the Blade shell + the runtime config look at.
             $builtAssetsPath = __DIR__.'/../public/vendor/mcp-pack-admin';
+            $publishTo = public_path((string) config('mcp-pack-admin.asset_path', 'vendor/mcp-pack-admin'));
             if (is_dir($builtAssetsPath)) {
                 $this->publishes([
-                    $builtAssetsPath => public_path('vendor/mcp-pack-admin'),
+                    $builtAssetsPath => $publishTo,
                 ], 'mcp-pack-admin-assets');
             }
         }

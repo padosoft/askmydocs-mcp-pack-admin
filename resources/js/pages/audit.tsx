@@ -172,6 +172,16 @@ function AuditDrilldown({ auditId, onClose, toast }) {
                 </button>
               </>
             }>
+      {auditId && auditId !== detail.id && (
+        <div className="banner warn" style={{ margin: 16 }} data-testid="audit-drilldown-fixture-banner">
+          <span className="banner-icon"><I.Info size={16}/></span>
+          <div className="banner-body">
+            Showing the seeded fixture record for the prototype.
+            Live request/response for <b className="mono">{auditId}</b> will
+            land once the SPA wires to <span className="mono">GET /api/admin/mcp-pack/audit/{auditId}</span>.
+          </div>
+        </div>
+      )}
       <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
         <div className="flex-h" style={{ gap: 24, flexWrap: 'wrap' }}>
           <KvInline label="Server" v={<><span className="mono">{detail.server}</span></>}/>

@@ -49,7 +49,15 @@ function Shell() {
   const location = useLocation();
   const toast = useToast();
 
-  const [theme, setTheme] = React.useState<string>(() => localStorage.getItem('mcp_theme') || 'dark');
+  const [theme, setTheme] = React.useState<string>(() => {
+    // Precedence: per-user override (localStorage) > host operator default
+    // (window.__MCP_PACK_ADMIN__.theme_default seeded by the Blade shell from
+    // config('mcp-pack-admin.theme_default')) > hard-coded dark.
+    const stored = localStorage.getItem('mcp_theme');
+    if (stored) return stored;
+    const cfg = (window as any).__MCP_PACK_ADMIN__ ?? {};
+    return (cfg.theme_default as string) || 'dark';
+  });
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [livePaused, setLivePaused] = React.useState(false);
   const [liveEvents, setLiveEvents] = React.useState<any[]>(() => AUDIT.slice(0, 24).map((a: any) => ({ ...a, isNew: false })));
