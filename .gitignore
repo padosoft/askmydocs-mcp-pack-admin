@@ -1,0 +1,12 @@
+/vendor/
+/node_modules/
+/public/vendor/mcp-pack-admin/
+/.phpunit.cache/
+/.idea/
+/.vscode/
+/playwright-report/
+/test-results/
+/coverage/
+composer.lock
+*.log
+.DS_Store
