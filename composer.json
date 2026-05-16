@@ -1,0 +1,64 @@
+{
+    "name": "padosoft/askmydocs-mcp-pack-admin",
+    "description": "Pixel-perfect admin web panel for padosoft/askmydocs-mcp-pack — circuit-breaker dashboard, tenant-aware audit log, interactive JSON-RPC playground, prompt catalog. Cross-mounts under /admin/mcp/ in any Laravel host.",
+    "keywords": ["laravel", "mcp", "model-context-protocol", "admin", "dashboard", "ui", "react", "padosoft", "askmydocs"],
+    "license": "Apache-2.0",
+    "type": "library",
+    "authors": [
+        {
+            "name": "Padosoft",
+            "email": "hello@padosoft.com",
+            "homepage": "https://github.com/padosoft"
+        },
+        {
+            "name": "Lorenzo Padovani",
+            "email": "lorenzo.padovani@padosoft.com"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "illuminate/config": "^11.0|^12.0|^13.0",
+        "illuminate/http": "^11.0|^12.0|^13.0",
+        "illuminate/routing": "^11.0|^12.0|^13.0",
+        "illuminate/support": "^11.0|^12.0|^13.0",
+        "illuminate/view": "^11.0|^12.0|^13.0"
+    },
+    "suggest": {
+        "padosoft/askmydocs-mcp-pack": "^1.4 — provides the admin REST surface that this SPA consumes."
+    },
+    "require-dev": {
+        "orchestra/testbench": "^9.0|^10.0|^11.0",
+        "phpunit/phpunit": "^11.0|^12.0",
+        "laravel/pint": "^1.18"
+    },
+    "autoload": {
+        "psr-4": {
+            "Padosoft\\AskMyDocsMcpPackAdmin\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Padosoft\\AskMyDocsMcpPackAdmin\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Padosoft\\AskMyDocsMcpPackAdmin\\McpPackAdminServiceProvider"
+            ]
+        }
+    },
+    "scripts": {
+        "format": "pint",
+        "format:test": "pint --test",
+        "test": "phpunit",
+        "build": "npm install && npm run build"
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "preferred-install": "dist",
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
