@@ -196,8 +196,22 @@ function PreferencesSection({ theme, onTheme, toast }) {
             { v: 'system', t: 'System', d: 'Follow OS preference' },
           ].map(o => (
             <button key={o.v}
-                    className={`radio-card ${theme === o.v || (o.v === 'system' && theme === 'light') ? 'active' : ''}`}
-                    onClick={() => onTheme(o.v === 'system' ? 'light' : o.v)}>
+                    className={`radio-card ${theme === o.v ? 'active' : ''}`}
+                    onClick={() => {
+                      if (o.v === 'system') {
+                        // Resolve against the host OS preference at the moment of
+                        // selection. We do NOT persist a tri-state preference
+                        // (that would require widening the App-level theme state
+                        // shape); instead picking "System" snapshots the OS value
+                        // into the per-user override. Users can re-pick "System"
+                        // any time to re-sync.
+                        const prefersDark = typeof window !== 'undefined'
+                          && window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+                        onTheme(prefersDark ? 'dark' : 'light');
+                      } else {
+                        onTheme(o.v);
+                      }
+                    }}>
               <div className="rc-title">{o.t}</div>
               <div className="rc-desc">{o.d}</div>
             </button>

@@ -1,4 +1,7 @@
-// @ts-nocheck
+// @ts-nocheck — cross-module: the auto-converted prototype modules
+// have inferred (any-based) parameter signatures that flip every
+// optional prop into a required slot from the outside; properly
+// typing them is tracked in scripts/convert-design.mjs.
 // App shell — adapted from prototype `app.jsx`. The visible chrome
 // (Sidebar + Topbar + CommandPalette + Tour + AuditDrilldown) is
 // identical to the prototype; the only change is routing — we use
@@ -11,9 +14,10 @@ import {
   useNavigate,
   useLocation,
   useParams,
+  useMatch,
 } from 'react-router-dom';
 import { I, useToast, ToastProvider } from './lib/ui';
-import { TENANTS, ME, NOW, SERVERS, AUDIT } from './lib/data';
+import { TENANTS, ME, NOW, SERVERS, TOOLS, AUDIT } from './lib/data';
 import { Sidebar, Topbar, CommandPalette, Tour, TOUR_STEPS } from './components/shell';
 import { DashboardPage } from './pages/dashboard';
 import { ServersListPage, ServerDetailPage, ServerNewPage } from './pages/servers';
@@ -84,7 +88,7 @@ function Shell() {
     if (livePaused) return;
     const id = setInterval(() => {
       const srv = SERVERS[Math.floor(Math.random() * SERVERS.length)];
-      const tools = (window as any).TOOLS?.[srv.id] || [];
+      const tools = (TOOLS as any)[srv.id] || [];
       const tool = tools[Math.floor(Math.random() * tools.length)];
       const r = Math.random();
       const status =
@@ -309,9 +313,13 @@ function AuditPageRouteAdapter({ nav }: any) {
 }
 
 function AuditDrilldownRouteAdapter({ nav, toast }: any) {
-  const location = useLocation();
-  const match = location.pathname.match(/^\/audit\/(.+)$/);
-  const auditId = match ? match[1] : null;
+  // The drawer is intentionally mounted at App root (NOT inside a <Route>) so
+  // it overlays the AuditPage while preserving the page's own scroll position
+  // — same UX choice the prototype made. We still resolve the audit id via
+  // react-router's `useMatch` so the routing tree owns the URL grammar; no
+  // ad-hoc regex parsing of `location.pathname`.
+  const match = useMatch('/audit/:auditId');
+  const auditId = match?.params?.auditId ?? null;
   return <AuditDrilldown auditId={auditId} onClose={() => nav('audit')} toast={toast} />;
 }
 

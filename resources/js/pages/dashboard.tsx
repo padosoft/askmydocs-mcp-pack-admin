@@ -227,7 +227,12 @@ function DashboardPage({ liveEvents, livePaused, onTogglePaused, onClearFeed, on
   const aggSpark = Array.from({ length: 60 }, (_, i) =>
     SERVERS.reduce((a, s) => a + (s.spark[i] || 0), 0)
   );
-  const latSpark = SERVERS.find(s => s.id === 'srv_01').spark_latency;
+  // Latency sparkline source: prefer the canonical "openai-mcp" server, but
+  // fall back to the first server in the fleet (or an empty array) so a
+  // renamed fixture doesn't crash the entire dashboard with a null deref.
+  const latSpark = (SERVERS.find(s => s.id === 'srv_01')?.spark_latency)
+    ?? SERVERS[0]?.spark_latency
+    ?? [];
   const errPerMin = SERVERS[0].spark.map((_, i) =>
     SERVERS.reduce((a, s) => a + (s.status === 'err' || s.status === 'warn' ? s.spark[i] * 0.05 : 0), 0)
   );

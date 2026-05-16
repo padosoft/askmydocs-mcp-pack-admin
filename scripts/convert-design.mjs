@@ -46,14 +46,23 @@ const FILES = [
 
 // Names exported by each module. We harvest them from the original
 // `Object.assign(window, {...})` line at the bottom of every JSX.
-const PROLOGUE_REACT = `// @ts-nocheck
+// `@ts-nocheck` is applied to every mechanically-converted prototype
+// module. Rationale: the JSX prototype uses dynamic property access
+// patterns (`window.X`, `RESOURCES[serverId]`, untyped fixture shape)
+// throughout. Typing the converted output properly would require
+// inventing a typed fixture schema, which is busywork against the
+// goal of "ship a pixel-perfect 1:1 port quickly". The boundary code
+// that we wrote by hand (`main.tsx`, `App.tsx`) is type-checked
+// normally. Future hardening: introduce a typed FixtureProvider
+// and remove the pragma from one module per cycle.
+const PROLOGUE_REACT = `// @ts-nocheck — see scripts/convert-design.mjs for rationale.
 import React from 'react';
 `;
 
-const PROLOGUE_DATA = `// @ts-nocheck
-// Auto-converted from design prototype data.js.
-// All fixtures + the NOW reference are exported and consumed
-// directly by the UI modules (no window globals at runtime).
+const PROLOGUE_DATA = `// @ts-nocheck — see scripts/convert-design.mjs for rationale.
+// Auto-converted from design prototype data.js. All fixtures + the
+// NOW reference are exported and consumed directly by the UI modules
+// (no window globals at runtime).
 
 `;
 
