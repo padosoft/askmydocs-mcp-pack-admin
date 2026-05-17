@@ -3,7 +3,28 @@
 All notable changes to `padosoft/askmydocs-mcp-pack-admin` are documented here.
 The project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v1.0.1] — 2026-05-17
+
+### Changed
+- Frontend toolchain major bump: `vite` 5 → 8.0.13, `vitest` 2 → 4.1.6,
+  `@vitejs/plugin-react` 4 → 6.0.2. All peer-dep ranges aligned (plugin-react
+  v6 declares `vite ^8.0.0`). Vitest now runs on the new rolldown-backed Vite 8.
+- `engines.node` tightened from `>=20.0.0` to `^20.19.0 || >=22.12.0` to match
+  the stricter constraint vite 8 propagates — installing on Node 20.0–20.18
+  was silently broken before.
+- `actions/setup-node` in the CI workflow pinned to `node-version: '20.19'`
+  (string) on both Vitest and Playwright jobs so the runner Node patch
+  always satisfies the upgraded toolchain.
+- Direct `esbuild` dev dependency dropped — vite 8 pulls it transitively
+  only when its optional peer is provided.
+
+### Notes
+- PHP/Laravel surface area unchanged. Composer consumers do **not** see any
+  behaviour delta; this is a frontend-only chore release. Re-publishing
+  exists primarily to keep Packagist's latest tag aligned with `main` after
+  PR #4.
+
+## [v1.0.0] — 2026-05-17
 
 ### Added
 - Initial release scaffold.
