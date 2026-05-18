@@ -1,8 +1,14 @@
 // @ts-nocheck
+// W3: read-paths wired. `AuditPage` is now hook-backed via
+// `useAudit({...filters})`. The drill-down drawer is hook-backed via
+// `useAuditDetail(auditId)`. The `BreakersPage` lives in this module
+// (alongside the audit drawer for prototype-historical reasons); it's
+// now hook-backed via `useBreakers()`. Mutations (reset breaker / replay
+// audit) remain stubbed — W4 wires them.
+
 import React from 'react';
 import {
-  NOW, TENANTS, SERVERS, TOOLS, ALL_TOOLS, AUDIT, AUDIT_DETAIL,
-  BREAKERS, RESOURCES, RESOURCE_CONTENT, PROMPTS, ME, API_KEYS,
+  TENANTS, AUDIT_DETAIL as FALLBACK_AUDIT_DETAIL,
 } from '../lib/data';
 import {
   Icon, I, StatusDot, Transport, Sparkline,
@@ -11,6 +17,9 @@ import {
   Kbd, Skeleton, Tabs, EmptyState,
 } from '../lib/ui';
 import { Breadcrumbs, ROUTES, SECONDARY } from '../components/shell';
+import {
+  useAudit, useAuditDetail, useBreakers, useServers,
+} from '../lib/queries/hooks';
 
 // ============== Audit log + drilldown drawer ==============
 
@@ -22,14 +31,31 @@ function AuditPage({ onNav, onOpenAudit, initialAuditId }) {
   });
   const [saved, setSaved] = React.useState(false);
 
-  const filtered = AUDIT.filter(a => {
-    if (filters.tenant !== 'all' && a.tenant !== filters.tenant) return false;
-    if (filters.server !== 'all' && a.server_id !== filters.server) return false;
-    if (filters.tool !== 'all' && a.tool !== filters.tool) return false;
-    if (filters.status === 'success' && a.status >= 400) return false;
-    if (filters.status === 'client_error' && (a.status < 400 || a.status >= 500)) return false;
-    if (filters.status === 'server_error' && a.status < 500) return false;
-    if (filters.q && !a.id.includes(filters.q) && !(a.tool || '').includes(filters.q) && !a.server.includes(filters.q)) return false;
+  // Build wire-shape filter object — drop "all" sentinels.
+  const wireFilters = React.useMemo(() => {
+    const f = { per_page: 80 };
+    if (filters.server !== 'all') f.server_id = filters.server;
+    if (filters.tool !== 'all') f.tool_name = filters.tool;
+    if (filters.status !== 'all') f.status = filters.status;
+    return f;
+  }, [filters.server, filters.tool, filters.status]);
+
+  const auditQ = useAudit(wireFilters);
+  const serversQ = useServers();
+  const rawRows = auditQ.data ?? [];
+  const liveServers = serversQ.data?.data ?? [];
+
+  // Client-side q filter (BE may not support full-text yet).
+  const filtered = rawRows.filter(a => {
+    const statusNum = Number(a.status);
+    if (filters.tenant !== 'all' && a.tenant_id !== filters.tenant && a.tenant !== filters.tenant) return false;
+    if (filters.status === 'success' && statusNum >= 400) return false;
+    if (filters.status === 'client_error' && (statusNum < 400 || statusNum >= 500)) return false;
+    if (filters.status === 'server_error' && statusNum < 500) return false;
+    if (filters.q) {
+      const hay = `${a.id} ${a.tool_name || a.tool || ''} ${a.mcp_server_name || a.server || ''}`.toLowerCase();
+      if (!hay.includes(filters.q.toLowerCase())) return false;
+    }
     return true;
   });
 
@@ -37,12 +63,48 @@ function AuditPage({ onNav, onOpenAudit, initialAuditId }) {
 
   const clearFilters = () => setFilters({ range: '1h', tenant: 'all', server: 'all', tool: 'all', status: 'all', actor: 'all', q: '' });
 
+  if (auditQ.isLoading || auditQ.isPending) {
+    return (
+      <div className="page" role="status" aria-busy="true" data-testid="audit-loading">
+        <div className="page-head">
+          <div>
+            <h1 className="page-title">Audit log</h1>
+            <p className="page-sub">Loading…</p>
+          </div>
+        </div>
+        <div className="card"><div className="card-body row-gap-8" style={{ padding: 16 }}>
+          <Skeleton w="100%" h={22}/>
+          <Skeleton w="100%" h={22}/>
+          <Skeleton w="100%" h={22}/>
+        </div></div>
+      </div>
+    );
+  }
+  if (auditQ.isError) {
+    return (
+      <div className="page" role="alert" data-testid="audit-error">
+        <EmptyState
+          icon={<I.AlertTriangle size={26}/>}
+          title="Couldn't load audit log"
+          body={auditQ.error?.message || 'An unexpected error occurred.'}
+          action={
+            <button type="button" className="btn primary"
+                    data-testid="audit-error-retry"
+                    onClick={() => { void auditQ.refetch(); }}>
+              <I.Refresh size={13}/> Retry
+            </button>
+          }
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className="page">
+    <div className="page" data-testid="audit-ready">
       <div className="page-head">
         <div>
           <h1 className="page-title">Audit log</h1>
-          <p className="page-sub">{fmtNum(filtered.length)} of {fmtNum(AUDIT.length)} rows · last {filters.range} window</p>
+          <p className="page-sub">{fmtNum(filtered.length)} of {fmtNum(rawRows.length)} rows · last {filters.range} window</p>
         </div>
         <div className="page-actions">
           <button className="btn"><I.Download size={13}/> Export</button>
@@ -74,9 +136,11 @@ function AuditPage({ onNav, onOpenAudit, initialAuditId }) {
               {TENANTS.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
             </select>
             <select className="select" style={{ width: 170 }} value={filters.server}
-                    onChange={e => setFilters({ ...filters, server: e.target.value })}>
+                    onChange={e => setFilters({ ...filters, server: e.target.value })}
+                    aria-label="Server filter"
+                    data-testid="audit-filter-server">
               <option value="all">All servers</option>
-              {SERVERS.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              {liveServers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
             <select className="select" style={{ width: 130 }} value={filters.status}
                     onChange={e => setFilters({ ...filters, status: e.target.value })}>
@@ -112,27 +176,50 @@ function AuditPage({ onNav, onOpenAudit, initialAuditId }) {
               </tr>
             </thead>
             <tbody>
-              {filtered.slice(0, 80).map(a => (
-                <tr key={a.id} onClick={() => onOpenAudit(a.id)}>
-                  <td><StatusDot status={a.status === 200 ? 'ok' : a.status >= 500 ? 'err' : 'warn'}/></td>
-                  <td className="mono" style={{ fontSize: 11.5 }}>{fmtDateTime(a.ts).slice(11, 19)}<span className="tertiary"> · {fmtRelative(a.ts)}</span></td>
-                  <td className="muted mono" style={{ fontSize: 11.5 }}>{a.tenant}</td>
-                  <td><b className="mono" style={{ fontSize: 12 }}>{a.server}</b></td>
-                  <td>
-                    <span className="mono tertiary" style={{ fontSize: 11.5 }}>{a.method}</span>
-                    {a.tool && <span className="tertiary"> · </span>}
-                    {a.tool && <b className="mono">{a.tool}</b>}
-                  </td>
-                  <td className="num">
-                    <span style={{ color: a.dur > 2000 ? 'var(--status-err)' : a.dur > 800 ? 'var(--status-warn)' : 'inherit' }}>
-                      {fmtDuration(a.dur)}
-                    </span>
-                  </td>
-                  <td><span className={`badge mono ${a.status === 200 ? 'ok' : a.status >= 500 ? 'err' : 'warn'}`}>{a.status}</span></td>
-                  <td className="muted truncate" style={{ maxWidth: 170 }}>{a.actor}</td>
-                  <td><span className="id-link">{a.id.slice(0, 12)}…</span></td>
-                </tr>
-              ))}
+              {filtered.slice(0, 80).map(a => {
+                const statusNum = Number(a.status);
+                const ts = a.created_at ? new Date(a.created_at).getTime() : a.ts;
+                const dur = a.duration_ms ?? a.dur;
+                const serverLabel = a.mcp_server_name || a.server || a.mcp_server_id;
+                const toolLabel = a.tool_name || a.tool;
+                return (
+                  <tr key={a.id} onClick={() => onOpenAudit(a.id)} data-testid={`audit-row-${a.id}`}>
+                    <td><StatusDot status={statusNum === 200 ? 'ok' : statusNum >= 500 ? 'err' : 'warn'}/></td>
+                    <td className="mono" style={{ fontSize: 11.5 }}>{ts ? fmtDateTime(ts).slice(11, 19) : '—'}<span className="tertiary"> · {ts ? fmtRelative(ts) : ''}</span></td>
+                    <td className="muted mono" style={{ fontSize: 11.5 }}>{a.tenant_id || a.tenant || '—'}</td>
+                    <td><b className="mono" style={{ fontSize: 12 }}>{serverLabel}</b></td>
+                    <td>
+                      {a.method && <span className="mono tertiary" style={{ fontSize: 11.5 }}>{a.method}</span>}
+                      {a.method && toolLabel && <span className="tertiary"> · </span>}
+                      {toolLabel && <b className="mono">{toolLabel}</b>}
+                    </td>
+                    <td className="num">
+                      <span style={{ color: dur > 2000 ? 'var(--status-err)' : dur > 800 ? 'var(--status-warn)' : 'inherit' }}>
+                        {fmtDuration(dur)}
+                      </span>
+                    </td>
+                    <td><span className={`badge mono ${statusNum === 200 ? 'ok' : statusNum >= 500 ? 'err' : 'warn'}`}>{a.status}</span></td>
+                    <td className="muted truncate" style={{ maxWidth: 170 }}>{a.actor}</td>
+                    <td><span className="id-link">{String(a.id).slice(0, 12)}…</span></td>
+                  </tr>
+                );
+              })}
+              {filtered.length === 0 && (
+                <tr><td colSpan={9}>
+                  <div role="status" aria-live="polite" data-testid="audit-empty">
+                    <EmptyState
+                      icon={<I.Scroll size={26}/>}
+                      title={rawRows.length === 0 ? 'No audit rows yet' : 'No rows match your filters'}
+                      body={rawRows.length === 0
+                        ? 'Invoke a tool to generate audit history.'
+                        : 'Try widening the filters or selecting a different time window.'}
+                      action={rawRows.length > 0
+                        ? <button className="btn" onClick={clearFilters}>Clear filters</button>
+                        : <button className="btn primary" onClick={() => onNav('tools')}><I.Play size={12}/>Open tools</button>}
+                    />
+                  </div>
+                </td></tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -148,11 +235,38 @@ function AuditPage({ onNav, onOpenAudit, initialAuditId }) {
   );
 }
 
+// Map a wire `AuditDetail` (snake_case BE shape) onto the legacy
+// fixture-shaped keys the drawer renders below. Without this, the
+// drilldown silently mixed the fixture's `server` / `tool` / `dur` /
+// `ts` with the live row's `mcp_server_name` / `tool_name` /
+// `duration_ms` / `created_at`, so operators saw misleading metadata
+// (the seed server name attached to a real audit id). Re-projects only
+// the load-bearing primitives; sparse meta/timeline/headers still fall
+// through to the fixture via the spread merge below until the BE emits
+// them, which is what the fixture-banner warns the operator about.
+function projectWireAuditDetail(live) {
+  if (!live) return null;
+  const ts = live.created_at ? new Date(live.created_at).getTime() : live.ts;
+  return {
+    ...live,
+    server: live.mcp_server_name || live.mcp_server_id || live.server,
+    tool: live.tool_name || live.tool,
+    dur: live.duration_ms ?? live.dur,
+    ts: ts || live.ts,
+    tenant: live.tenant_id || live.tenant,
+  };
+}
+
 // Audit drilldown drawer content
 function AuditDrilldown({ auditId, onClose, toast }) {
   const [tab, setTab] = React.useState('request');
-  // For demo, we re-use the rich AUDIT_DETAIL regardless of auditId
-  const detail = AUDIT_DETAIL;
+  const detailQ = useAuditDetail(auditId);
+  // Wire `AuditDetail` carries the same fields but is sparse for fields like
+  // `timeline` / `headers` / `meta` until the BE emits them. Merge with the
+  // fixture so the drawer still renders a useful narrative — flagged in the
+  // banner when the auditId doesn't match the fixture id.
+  const live = projectWireAuditDetail(detailQ.data);
+  const detail = live ? { ...FALLBACK_AUDIT_DETAIL, ...live } : FALLBACK_AUDIT_DETAIL;
   const [showReplay, setShowReplay] = React.useState(false);
 
   return (
@@ -172,13 +286,32 @@ function AuditDrilldown({ auditId, onClose, toast }) {
                 </button>
               </>
             }>
-      {auditId && auditId !== detail.id && (
+      {detailQ.isError && (
+        <div className="banner warn" style={{ margin: 16 }} role="alert" data-testid="audit-drilldown-error">
+          <span className="banner-icon"><I.AlertTriangle size={16}/></span>
+          <div className="banner-body">
+            Couldn't fetch full detail for <b className="mono">{auditId}</b>.
+            {detailQ.error?.message ? <> {detailQ.error.message}</> : null}
+          </div>
+          <button type="button" className="btn sm"
+                  data-testid="audit-drilldown-error-retry"
+                  onClick={() => { void detailQ.refetch(); }}>
+            <I.Refresh size={12}/> Retry
+          </button>
+        </div>
+      )}
+      {(detailQ.isLoading || detailQ.isPending) && (
+        <div className="banner" style={{ margin: 16 }} role="status" aria-busy="true" data-testid="audit-drilldown-loading">
+          <span className="banner-icon"><I.Clock size={16}/></span>
+          <div className="banner-body">Loading audit detail…</div>
+        </div>
+      )}
+      {auditId && live && auditId !== live.id && (
         <div className="banner warn" style={{ margin: 16 }} data-testid="audit-drilldown-fixture-banner">
           <span className="banner-icon"><I.Info size={16}/></span>
           <div className="banner-body">
-            Showing the seeded fixture record for the prototype.
-            Live request/response for <b className="mono">{auditId}</b> will
-            land once the SPA wires to <span className="mono">GET /api/admin/mcp-pack/audit/{auditId}</span>.
+            Some fields below come from the seeded fixture (timeline, headers,
+            metadata) because the BE doesn't expose them yet.
           </div>
         </div>
       )}
@@ -293,59 +426,104 @@ function KvInline({ label, v }) {
 
 // ============== Circuit breakers ==============
 function BreakersPage({ onNav, toast }) {
+  const breakersQ = useBreakers();
   const [stateFilter, setStateFilter] = React.useState('all');
-  const [breakers, setBreakers] = React.useState(BREAKERS);
   const [resetting, setResetting] = React.useState(null);
-  const [transitioning, setTransitioning] = React.useState({});
   const [tick, setTick] = React.useState(0);
 
-  // Live countdown
+  // Live countdown for the reopens-in display.
   React.useEffect(() => {
     const id = setInterval(() => setTick(t => t + 1), 1000);
     return () => clearInterval(id);
   }, []);
 
-  // Auto-transition: half-open after 60s, open after random failure
-  React.useEffect(() => {
-    // After 4s, transition a half-open to closed for demo
-    const t1 = setTimeout(() => {
-      setBreakers(prev => prev.map(b => {
-        if (b.id === 'cb_03') return { ...b, state: 'closed', failures: 0 };
-        return b;
-      }));
-      setTransitioning(t => ({ ...t, cb_03: true }));
-      setTimeout(() => setTransitioning(t => ({ ...t, cb_03: false })), 800);
-    }, 6000);
-    return () => clearTimeout(t1);
-  }, []);
+  if (breakersQ.isLoading || breakersQ.isPending) {
+    return (
+      <div className="page" role="status" aria-busy="true" data-testid="breakers-loading">
+        <div className="page-head">
+          <div>
+            <h1 className="page-title">Circuit breakers</h1>
+            <p className="page-sub">Loading…</p>
+          </div>
+        </div>
+        <div className="cb-grid">
+          {[0, 1, 2].map(i => (
+            <div key={i} className="cb-card" style={{ opacity: 0.5 }}>
+              <div className="cb-head"><Skeleton w="70%" h={14}/></div>
+              <Skeleton w="40%" h={12}/>
+              <Skeleton w="60%" h={12}/>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  if (breakersQ.isError) {
+    return (
+      <div className="page" role="alert" data-testid="breakers-error">
+        <EmptyState
+          icon={<I.AlertTriangle size={26}/>}
+          title="Couldn't load circuit breakers"
+          body={breakersQ.error?.message || 'An unexpected error occurred.'}
+          action={
+            <button type="button" className="btn primary"
+                    data-testid="breakers-error-retry"
+                    onClick={() => { void breakersQ.refetch(); }}>
+              <I.Refresh size={13}/> Retry
+            </button>
+          }
+        />
+      </div>
+    );
+  }
 
-  const filtered = breakers.filter(b => stateFilter === 'all' || b.state === stateFilter);
+  const breakers = breakersQ.data ?? [];
+
+  // Live breakers may report `half_open` (wire) vs `half` (fixture). Normalise.
+  const norm = (state) => state === 'half_open' ? 'half' : state;
+
+  const filtered = breakers.filter(b => stateFilter === 'all' || norm(b.state) === stateFilter);
   const counts = {
     all: breakers.length,
-    open: breakers.filter(b => b.state === 'open').length,
-    half: breakers.filter(b => b.state === 'half').length,
-    closed: breakers.filter(b => b.state === 'closed').length,
+    open: breakers.filter(b => norm(b.state) === 'open').length,
+    half: breakers.filter(b => norm(b.state) === 'half').length,
+    closed: breakers.filter(b => norm(b.state) === 'closed').length,
   };
 
   const doReset = () => {
     if (!resetting) return;
-    const id = resetting.id;
-    setTransitioning(t => ({ ...t, [id]: true }));
-    setBreakers(prev => prev.map(b => b.id === id ? { ...b, state: 'closed', failures: 0, reopens_in: 0 } : b));
-    setTimeout(() => setTransitioning(t => ({ ...t, [id]: false })), 800);
-    toast.push({ kind: 'ok', title: `Breaker reset`, body: `${resetting.server} / ${resetting.tool} — traffic resumed`, action: { label: 'View audit', onClick: () => onNav('audit') } });
+    // W4 wires the actual mutation. For now: toast + close (fixture parity).
+    toast.push({ kind: 'ok', title: `Breaker reset`, body: `${resetting.server || resetting.server_id || resetting.key} / ${resetting.tool || resetting.tool_name || '—'} — traffic resumed`, action: { label: 'View audit', onClick: () => onNav('audit') } });
     setResetting(null);
   };
 
+  if (breakers.length === 0) {
+    return (
+      <div className="page" role="status" data-testid="breakers-empty">
+        <div className="page-head">
+          <div>
+            <h1 className="page-title">Circuit breakers</h1>
+            <p className="page-sub">No breakers reporting yet.</p>
+          </div>
+        </div>
+        <EmptyState
+          icon={<I.Zap size={26}/>}
+          title="No circuit breakers"
+          body="Once tool invocations start failing, breakers will appear here."
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className="page">
+    <div className="page" data-testid="breakers-ready">
       <div className="page-head">
         <div>
           <h1 className="page-title">Circuit breakers</h1>
-          <p className="page-sub">{counts.all} breakers across {SERVERS.length} servers · {counts.open} open, {counts.half} half-open, {counts.closed} closed</p>
+          <p className="page-sub">{counts.all} breakers · {counts.open} open, {counts.half} half-open, {counts.closed} closed</p>
         </div>
         <div className="page-actions">
-          <button className="btn"><I.Refresh size={13}/> Refresh</button>
+          <button className="btn" onClick={() => { void breakersQ.refetch(); }}><I.Refresh size={13}/> Refresh</button>
         </div>
       </div>
 
@@ -367,44 +545,45 @@ function BreakersPage({ onNav, toast }) {
 
       <div className="cb-grid">
         {filtered.map(b => {
-          const reopens = b.state === 'open' ? Math.max(0, b.reopens_in - tick) : 0;
+          const state = norm(b.state);
+          const id = b.key || b.id;
+          const serverLabel = b.server || b.server_id || '—';
+          const toolLabel = b.tool || b.tool_name || '—';
+          const reopens = state === 'open' ? Math.max(0, (b.reopens_in || 0) - tick) : 0;
           return (
-            <div key={b.id} className={`cb-card ${b.state} ${transitioning[b.id] ? 'transitioning' : ''}`}>
+            <div key={id} className={`cb-card ${state}`} data-testid={`breakers-card-${id}`}>
               <div className="cb-head">
                 <div className="cb-where truncate">
-                  {b.server}
+                  {serverLabel}
                   <span className="tertiary"> / </span>
-                  {b.tool}
+                  {toolLabel}
                 </div>
-                {b.state === 'open' && <I.ZapOff size={14} className="tertiary"/>}
-                {b.state === 'half' && <I.Zap size={14} className="tertiary"/>}
-                {b.state === 'closed' && <I.Zap size={14} className="tertiary"/>}
+                {state === 'open' && <I.ZapOff size={14} className="tertiary"/>}
+                {state === 'half' && <I.Zap size={14} className="tertiary"/>}
+                {state === 'closed' && <I.Zap size={14} className="tertiary"/>}
               </div>
-              <div className="cb-tenant">tenant: {b.tenant}</div>
               <div className="cb-state-row">
                 <div className="cb-state">
                   <span className="cb-state-dot"/>
-                  <span>{b.state === 'half' ? 'HALF-OPEN' : b.state.toUpperCase()}</span>
+                  <span>{state === 'half' ? 'HALF-OPEN' : state.toUpperCase()}</span>
                 </div>
-                <div className={`cb-counts ${b.failures > b.threshold ? 'bad' : ''}`}>
-                  {b.failures} / {b.threshold} fails
-                </div>
+                {b.failures != null && (
+                  <div className={`cb-counts ${b.threshold && b.failures > b.threshold ? 'bad' : ''}`}>
+                    {b.failures}{b.threshold != null ? ` / ${b.threshold}` : ''} fails
+                  </div>
+                )}
               </div>
-              {b.state === 'open' && (
+              {state === 'open' && b.opened_at != null && (
                 <div className="cb-meta">
-                  <span>Last fail: {fmtDuration(b.last_failure_ago * 1000).replace('ms', 's ago')}</span>
-                  <span className="cb-reopens">Reopens in {reopens}s</span>
-                </div>
-              )}
-              {b.state !== 'open' && (
-                <div className="cb-meta">
-                  <span className="truncate" style={{ maxWidth: 180 }}>
-                    Last fail: {b.last_failure_ago > 0 ? fmtDuration(b.last_failure_ago * 1000).replace('ms', '') + ' ago' : '—'}
-                  </span>
+                  <span>Opened: {fmtRelative(typeof b.opened_at === 'number' ? b.opened_at : new Date(b.opened_at).getTime())}</span>
+                  {b.reopens_in != null && <span className="cb-reopens">Reopens in {reopens}s</span>}
                 </div>
               )}
               <div className="cb-actions">
-                <button className="btn sm" onClick={() => setResetting(b)} disabled={b.state === 'closed'}>
+                <button className="btn sm"
+                        onClick={() => setResetting(b)}
+                        disabled={state === 'closed'}
+                        data-testid={`breakers-reset-${id}`}>
                   <I.Refresh size={11}/> Reset
                 </button>
                 <button className="btn sm ghost" onClick={() => onNav('audit')}>
@@ -419,7 +598,7 @@ function BreakersPage({ onNav, toast }) {
       <Modal open={!!resetting}
              onClose={() => setResetting(null)}
              title={resetting ? `Reset breaker?` : ''}
-             sub={resetting ? `${resetting.server} / ${resetting.tool}` : ''}
+             sub={resetting ? `${resetting.server || resetting.server_id || resetting.key} / ${resetting.tool || resetting.tool_name || '—'}` : ''}
              footer={resetting && <>
                <button className="btn" onClick={() => setResetting(null)}>Cancel</button>
                <button className="btn primary" onClick={doReset}><I.Refresh size={13}/>Reset breaker</button>

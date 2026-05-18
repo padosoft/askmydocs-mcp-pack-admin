@@ -5,6 +5,202 @@ The project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased] → v1.1.0
 
+### Added — Read-paths wired (W3)
+
+The 8 read-path page surfaces in `resources/js/pages/` now consume the W2
+TanStack Query hooks instead of importing the prototype fixture directly.
+Every page surface implements the R14 (surface-failures-loudly) +
+R11 (testid contract) + R15 (a11y) invariants — loading / error / empty
+states are visible, retry buttons call `refetch()`, error states use
+`role="alert"`, loading states use `aria-busy="true"`, empty states use
+`role="status"`.
+
+- **`resources/js/lib/data-state.tsx`** — new shared wrapper component
+  `<DataState>` that translates a `UseQueryResult` into the four
+  R14-mandated visible states with the R11 testid contract
+  (`<base>-loading|error|empty|error-retry`) and R15 a11y attributes
+  baked in. Re-used across every page tab + sub-section.
+- **`pages/dashboard.tsx` → `DashboardPage`** — wired via `useServers()`
+  + `useAudit({ per_page: 24 })` + `useBreakers()`. KPI tiles, recent
+  failures, and the per-server health strip are now real-data. Live-feed
+  is still simulator-driven (W4 picks up SSE wire). Sparklines, p50,
+  calls_1h fall back to the fixture-keyed values when the wire schema
+  doesn't carry them yet — flagged inline.
+- **`pages/servers.tsx` → `ServersListPage`** — wired via
+  `useServers({ q, status, transport, page, per_page })`. Filters route
+  to the wire endpoint AND apply client-side as a belt-and-braces guard
+  while BE filter coverage stabilises.
+- **`pages/servers.tsx` → `ServerDetailPage`** — wired via `useServer(id)`
+  for the page-level header + KPIs. Each detail tab is hook-backed:
+  - Tools: `useServerTools(id)` → `<DataState testIdBase="server-tools">`.
+  - Resources: `useResources(id)` → `<DataState testIdBase="server-resources">`.
+  - Prompts: `usePrompts(id)` → `<DataState testIdBase="server-prompts">`.
+  - Audit: `useAudit({ server_id: id, per_page: 30 })` →
+    `<DataState testIdBase="server-audit">`.
+  - Overview / Handshakes / Config remain fixture-augmented because the
+    wire schema doesn't yet carry telemetry (sparklines, percentiles).
+- **`pages/tools.tsx` → `ToolsPage`** — wired via `useTools()` for the
+  global matrix + `useServers()` for the grouping sidebar. Per-tool
+  recent calls (`ToolRecentCalls`) wired via `useAudit({ tool_name })`.
+  The Try-it Playground (`ToolPlayground`) stays fixture-only — `invoke`
+  is a write path, scheduled for W4.
+- **`pages/audit.tsx` → `AuditPage`** — wired via
+  `useAudit({...filters})`. Server-filter dropdown derives its options
+  from `useServers()` (R18 — derive from DB not literal). Drill-down
+  drawer (`AuditDrilldown`) wired via `useAuditDetail(auditId)`; falls
+  back to the seeded fixture for fields the BE doesn't yet emit
+  (timeline / headers / meta) with an explicit inline banner.
+- **`pages/audit.tsx` → `BreakersPage`** — wired via `useBreakers()`.
+  Wire `half_open` state is normalised to the `half` UI bucket.
+  Live-countdown ticker preserved; reset-mutation remains W4 scope.
+- **`pages/resources.tsx` → `ResourcesPage`** — wired via `useServers()`
+  + `useResources(serverId)` + `useResource(serverId, uri)`. Each pane
+  has its own loading / error / empty state — tree-level and content-level
+  states are independent so the user can recover from a content-fetch
+  failure without re-fetching the tree.
+- **`pages/resources.tsx` → `PromptsPage`** — wired via `useServers()`
+  + `usePrompts(serverId)` + `usePrompt(serverId, name)`. The previous
+  cross-server flat list is now scoped to a single server with a
+  dropdown selector.
+
+**Excluded from this wave (stay on fixtures by design):**
+
+- `PlaygroundPage` — OpenAPI explorer, no live-data dependency.
+- `SettingsPage` — preferences / theme / density form. Tenants + API-keys
+  sub-sections will wire in W4 alongside the mutation hooks they
+  depend on (`useCreateApiKey`, `useRevokeApiKey`).
+- `HelpPage` — static keyboard-shortcut / glossary / checklist content.
+
+`resources/js/lib/data.ts` is RETAINED in the bundle because the three
+excluded surfaces still import from it; a follow-up cleanup PR in v1.1
+will trim it after `SettingsPage` finishes wiring in W4.
+
+**Test coverage added (~65 new specs across 10 files):**
+
+- `tests/js/lib/data-state.test.tsx` — `<DataState>` wrapper unit tests
+  (loading/error/empty/ready + retry + role/aria attrs + custom empty).
+- `tests/js/pages/dashboard.test.tsx`,
+  `tests/js/pages/servers.test.tsx`,
+  `tests/js/pages/tools.test.tsx`,
+  `tests/js/pages/audit.test.tsx`,
+  `tests/js/pages/breakers.test.tsx`,
+  `tests/js/pages/resources.test.tsx`,
+  `tests/js/pages/prompts.test.tsx`,
+  `tests/js/pages/server-detail-tabs.test.tsx`,
+  `tests/js/pages/tools-recent-calls.test.tsx`,
+  `tests/js/pages/resources-content.test.tsx`,
+  `tests/js/pages/integration.test.tsx` — per-page R14 / R11 coverage
+  using MSW handlers + the shared `<QueryClientProvider>` wrapper from
+  `tests/js/lib/queries/wrapper.tsx`.
+- Existing `tests/js/smoke.test.tsx` updated to provide MSW handlers +
+  QueryClient wrapper so it still passes after the data-layer swap.
+
+Total Vitest count: 66 → 131 tests, 5 → 17 files. `npm test` +
+`npm run typecheck` + `npm run build` all green.
+
+**Notes:**
+
+- Playwright E2E specs continue to run on fixture data; updating them to
+  drive against the live data-layer is W5 scope. Local Playwright
+  failures during W3 development are EXPECTED and addressed in W5.
+- No mutations (write paths) are wired yet — W4 implements server
+  create/update/delete, tool invoke (with confirm-token protocol),
+  breaker reset, audit replay, API-key mint/revoke.
+- The SPA NEVER sets `X-Tenant-Id` — host middleware owns tenant
+  resolution (R30). Every hook delegates to `endpoints.ts` which uses
+  the shared `request()` helper from `lib/api/client.ts`.
+
+### Fixed — W3 iter-3 review (Copilot follow-up on iter-2)
+
+Six follow-up findings on the iter-2 commit:
+
+- **`pages/tools.tsx` (R14 — surface failures loudly)** —
+  `ServersListPage` failure was previously silenced inside `ToolsPage`:
+  when `/servers` errored the page fell through to the
+  `FALLBACK_SERVERS` grouping, attaching seed-data server names to
+  real (live) tool ids. Added an explicit `serversQ.isError`
+  branch with `data-testid="tools-servers-error"` and a retry
+  button that refetches both `serversQ` and `toolsQ`.
+- **`pages/dashboard.tsx` (R14)** — secondary queries `auditQ` and
+  `breakersQ` were silently degrading to `[]` on failure, so the
+  KPI strip displayed `0 open` breakers / "no recent failures"
+  while the underlying query was errored. Wired a page-level
+  `<div role="alert" data-testid="dashboard-secondary-error">`
+  banner above the KPI strip that names which query failed and
+  why the corresponding KPI/card may be misleading, plus a card-
+  scoped error state inside `RecentFailures` so the failures
+  panel itself shows the gap.
+- **`pages/dashboard.tsx`, `pages/audit.tsx`** — removed unused
+  `DataState` imports. Both modules render their own page-shell
+  error/loading states and don't route through `<DataState>` —
+  the import was dead code and implied a relationship that
+  didn't exist.
+- **`pages/resources.tsx`** — removed unused `TENANTS` import; the
+  Resources / Prompts pages don't render tenant data.
+- **`pages/resources.tsx` (R17 — sync cached state)** —
+  `ResourcesPage` and `PromptsPage` now derive the effective
+  `serverId` synchronously in render (`userPickedServerId ??
+  liveServers[0]?.id ?? null`) instead of holding a
+  `useState(null)` + post-mount `useEffect` to auto-pick. The
+  previous shape caused a one-render flicker after
+  `serversQ` resolved where the tree rendered the "No resources
+  advertised" empty state for a frame before the effect tick
+  fired the auto-pick — confusing for operators and a falsely-
+  empty signal for screen readers.
+
+### Fixed — W3 iter-2 review (Copilot + Codex)
+
+Addresses six findings from automated review on PR #7:
+
+- **`pages/resources.tsx` (P1 / XSS)** — `MarkdownRender` now HTML-escapes
+  the server-controlled source string BEFORE running the markdown-to-HTML
+  regex chain. A malicious or compromised MCP server can no longer execute
+  scripts in the admin UI by advertising a `text/markdown` resource that
+  contains raw HTML (`<script>`, `<img onerror=…>`, etc.). The escape
+  happens once at the top of the regex pipeline; markdown-injected tags
+  (`<h1>`, `<pre>`, `<code>`, `<table>`, `<tr>`, `<td>`, `<p>`) are
+  emitted by the replacement strings themselves and remain safe.
+- **`pages/resources.tsx` (JSON.parse crash)** — extracted the JSON
+  rendered-preview branch into a dedicated `<JsonPreview>` component
+  that wraps `JSON.parse` in try/catch. A malformed wire payload now
+  surfaces an inline error banner with `data-testid="resource-content-json-error"`
+  + `role="alert"` instead of throwing through React and unmounting the
+  entire Resources page.
+- **`pages/resources.tsx` (state co-render)** — gated the "No preview"
+  empty-state branch on `!contentQ.isLoading && !contentQ.isError` so
+  loading/error/empty are mutually exclusive (previously the empty
+  could render alongside loading skeletons).
+- **`pages/audit.tsx` (wire field mapping)** — `AuditDrilldown` now
+  projects the wire `AuditDetail` shape (`mcp_server_name`, `tool_name`,
+  `duration_ms`, `created_at`, `tenant_id`) onto the legacy UI keys
+  (`server`, `tool`, `dur`, `ts`, `tenant`) BEFORE the fixture spread
+  merge, via the new `projectWireAuditDetail()` helper. The drawer
+  previously displayed the seeded fixture's server/tool/timestamp for
+  any real audit row whose id didn't happen to match the fixture id —
+  misleading operator metadata. Fixture-banner remains as-is to flag
+  sparse meta/timeline/headers.
+- **`pages/servers.tsx` (BE filter mismatch)** — the operator-facing
+  `active` / `disabled` chips no longer forward as `status=` to the BE.
+  `disabled` is now translated to `enabled=false` (correct wire shape);
+  `active` falls through to client-side filtering only (since no server
+  ever reports `status=active`). `err` / `warn` are forwarded as
+  before because they are real wire status values. Previously the
+  chips returned empty result sets and looked permanently broken.
+- **`pages/servers.tsx` + `pages/audit.tsx` (R15 a11y)** — the
+  in-table empty-state cells now wrap their `EmptyState` in a
+  `<div role="status" aria-live="polite" data-testid="…-empty">`
+  wrapper so screen readers announce them consistently with the
+  other empty-states shipped in W3 (which already lived on
+  divs at the page level).
+- **`lib/data-state.tsx` (R11 ready-testid contract)** — the
+  ready branch now wraps its render in a sentinel
+  `<div role="presentation" data-testid="<base>-ready">` so the
+  R11 testid contract advertised in the header comment is actually
+  honoured for the success state. `role="presentation"` keeps the
+  wrapper out of the a11y tree. A new spec in
+  `tests/js/lib/data-state.test.tsx` pins the sentinel against
+  future refactors.
+
 ### Added — TanStack Query foundation (W2)
 
 The data layer that backs every read + mutation in v1.1. The SPA stays
