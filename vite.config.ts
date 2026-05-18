@@ -6,6 +6,12 @@ import { resolve } from 'path';
 export default defineConfig({
   plugins: [react()],
   base: '/vendor/mcp-pack-admin/',
+  optimizeDeps: {
+    // Pre-bundle the data-layer foundation so vite dev-server boots without
+    // an on-demand cold-start when the first hook fires. axios + TanStack
+    // Query both ship CJS interop shims that hot-load slowly otherwise.
+    include: ['axios', '@tanstack/react-query', '@tanstack/react-query-devtools'],
+  },
   // outDir lives inside Laravel's `public/` to make the built bundle
   // directly servable; publicDir must be disabled (default is `public/`)
   // because otherwise Vite tries to recursively copy `public/` into the

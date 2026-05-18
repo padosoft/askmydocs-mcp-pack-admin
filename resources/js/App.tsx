@@ -159,19 +159,32 @@ function Shell() {
     };
     const onNavEvt = (e: any) => nav(e.detail);
     const onOpenAudit = (e: any) => nav('audit/' + e.detail);
+    // The API client interceptor fires this event on every 401 so the SPA
+    // can surface a single, deduplicated session-expired toast (W2 wiring;
+    // actual sign-out / refresh flow lives further upstream).
+    const onAuthExpired = () => {
+      toast.push({
+        kind: 'err',
+        title: 'Session expired',
+        body: 'Please reload the page to sign in again.',
+        testId: 'auth-expired-toast',
+      });
+    };
     document.addEventListener('app:toggle-theme', onToggleTheme as any);
     document.addEventListener('app:toggle-paused', onTogglePaused as any);
     document.addEventListener('app:start-tour', onStartTour as any);
     document.addEventListener('app:nav', onNavEvt as any);
     document.addEventListener('app:open-audit', onOpenAudit as any);
+    document.addEventListener('auth:expired', onAuthExpired as any);
     return () => {
       document.removeEventListener('app:toggle-theme', onToggleTheme as any);
       document.removeEventListener('app:toggle-paused', onTogglePaused as any);
       document.removeEventListener('app:start-tour', onStartTour as any);
       document.removeEventListener('app:nav', onNavEvt as any);
       document.removeEventListener('app:open-audit', onOpenAudit as any);
+      document.removeEventListener('auth:expired', onAuthExpired as any);
     };
-  }, [nav]);
+  }, [nav, toast]);
 
   const route = routeKeyFromPath(location.pathname);
   const topRoute =
