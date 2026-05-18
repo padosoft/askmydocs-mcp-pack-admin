@@ -341,3 +341,39 @@ describe('Audit + Resilience', () => {
     expect(body).toEqual({ confirm_token: 'br_1' });
   });
 });
+
+describe('subscribeEvents — SSE wiring', () => {
+  // Iter-2 fix: jsdom lacks `EventSource`. The helper must
+  // (a) return a no-op cleanup function (NOT undefined / null) so
+  // callers can safely invoke it in their effect teardown;
+  // (b) NOT crash on its own when `EventSource === undefined`.
+  // Pin the contract — any future regression that throws when
+  // EventSource is missing would fail this test on the first run.
+
+  it('returns a cleanup function when EventSource is unavailable', () => {
+    const original = (globalThis as any).EventSource;
+    delete (globalThis as any).EventSource;
+    try {
+      const cleanup = api.subscribeEvents(() => undefined);
+      expect(typeof cleanup).toBe('function');
+      // The cleanup is a no-op but MUST be safe to call.
+      expect(() => cleanup()).not.toThrow();
+    } finally {
+      if (original !== undefined) {
+        (globalThis as any).EventSource = original;
+      }
+    }
+  });
+
+  it('does not throw when invoked in a non-EventSource environment', () => {
+    const original = (globalThis as any).EventSource;
+    delete (globalThis as any).EventSource;
+    try {
+      expect(() => api.subscribeEvents(() => undefined)).not.toThrow();
+    } finally {
+      if (original !== undefined) {
+        (globalThis as any).EventSource = original;
+      }
+    }
+  });
+});

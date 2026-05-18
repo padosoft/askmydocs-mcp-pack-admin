@@ -122,6 +122,12 @@ export function useHandshake(): UseMutationResult<void, Error, string> {
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: keys.servers.detail(id) });
       qc.invalidateQueries({ queryKey: keys.servers.tools(id) });
+      // Iter-2 fix: a handshake refreshes the server's advertised
+      // tool list — the FLAT `useTools()` cache (keyed under
+      // `tools.all()`) MUST be invalidated too, else the global Tools
+      // page keeps rendering pre-handshake data for up to `staleTime`
+      // (30s).
+      qc.invalidateQueries({ queryKey: keys.tools.all() });
     },
   });
 }

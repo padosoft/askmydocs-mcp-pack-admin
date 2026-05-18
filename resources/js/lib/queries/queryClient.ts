@@ -5,8 +5,9 @@
 //   - `retry: 1` for queries (network blips) but `retry: 0` for mutations
 //     (destructive ops should never auto-replay).
 //
-// Tests build their own client via `queries/testWrapper.tsx` with retries
-// disabled and `gcTime: 0` so cache state doesn't leak between specs.
+// Tests build their own client via `tests/js/lib/queries/wrapper.tsx`
+// with retries disabled and `gcTime: 0` so cache state doesn't leak
+// between specs.
 
 import { QueryClient } from '@tanstack/react-query';
 import { AuthExpiredError, FeatureDisabledError } from '../api/errors';

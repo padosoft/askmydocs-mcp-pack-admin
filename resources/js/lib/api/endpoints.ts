@@ -22,7 +22,6 @@ import type {
   HostApiKey,
   HostApiKeyCreateEnvelope,
   HostTenant,
-  HostUser,
   HostUserEnvelope,
   ListEnvelope,
   McpServer,

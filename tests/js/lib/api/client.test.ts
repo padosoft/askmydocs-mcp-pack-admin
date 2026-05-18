@@ -22,7 +22,12 @@ beforeEach(() => {
   // Reset the singleton client between tests so interceptor mutations don't
   // leak across files. Re-create against the canonical test base URL.
   setApiClient(createApiClient(BASE));
-  document.cookie = '';
+  // Iter-2 fix: `document.cookie = ''` is silently ignored in jsdom
+  // (it tries to set a cookie with empty name + value); the
+  // previously-set `XSRF-TOKEN` cookie would persist into the next
+  // test, making order-dependent failures. Explicitly expire the
+  // cookies we set in this suite by writing `key=; Max-Age=0; path=/`.
+  document.cookie = 'XSRF-TOKEN=; Max-Age=0; path=/';
 });
 
 describe('apiBase()', () => {
