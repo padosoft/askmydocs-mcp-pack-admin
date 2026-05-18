@@ -110,6 +110,44 @@ Total Vitest count: 66 → 131 tests, 5 → 17 files. `npm test` +
   resolution (R30). Every hook delegates to `endpoints.ts` which uses
   the shared `request()` helper from `lib/api/client.ts`.
 
+### Fixed — W3 iter-3 review (Copilot follow-up on iter-2)
+
+Six follow-up findings on the iter-2 commit:
+
+- **`pages/tools.tsx` (R14 — surface failures loudly)** —
+  `ServersListPage` failure was previously silenced inside `ToolsPage`:
+  when `/servers` errored the page fell through to the
+  `FALLBACK_SERVERS` grouping, attaching seed-data server names to
+  real (live) tool ids. Added an explicit `serversQ.isError`
+  branch with `data-testid="tools-servers-error"` and a retry
+  button that refetches both `serversQ` and `toolsQ`.
+- **`pages/dashboard.tsx` (R14)** — secondary queries `auditQ` and
+  `breakersQ` were silently degrading to `[]` on failure, so the
+  KPI strip displayed `0 open` breakers / "no recent failures"
+  while the underlying query was errored. Wired a page-level
+  `<div role="alert" data-testid="dashboard-secondary-error">`
+  banner above the KPI strip that names which query failed and
+  why the corresponding KPI/card may be misleading, plus a card-
+  scoped error state inside `RecentFailures` so the failures
+  panel itself shows the gap.
+- **`pages/dashboard.tsx`, `pages/audit.tsx`** — removed unused
+  `DataState` imports. Both modules render their own page-shell
+  error/loading states and don't route through `<DataState>` —
+  the import was dead code and implied a relationship that
+  didn't exist.
+- **`pages/resources.tsx`** — removed unused `TENANTS` import; the
+  Resources / Prompts pages don't render tenant data.
+- **`pages/resources.tsx` (R17 — sync cached state)** —
+  `ResourcesPage` and `PromptsPage` now derive the effective
+  `serverId` synchronously in render (`userPickedServerId ??
+  liveServers[0]?.id ?? null`) instead of holding a
+  `useState(null)` + post-mount `useEffect` to auto-pick. The
+  previous shape caused a one-render flicker after
+  `serversQ` resolved where the tree rendered the "No resources
+  advertised" empty state for a frame before the effect tick
+  fired the auto-pick — confusing for operators and a falsely-
+  empty signal for screen readers.
+
 ### Fixed — W3 iter-2 review (Copilot + Codex)
 
 Addresses six findings from automated review on PR #7:

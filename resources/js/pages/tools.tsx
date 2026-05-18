@@ -80,6 +80,33 @@ function ToolsPage({ onNav, toast, initialTool }) {
       </div>
     );
   }
+  // R14: `serversQ` failure was previously silenced — we'd fall back to
+  // the fixture-derived `FALLBACK_SERVERS` grouping below, which made
+  // the page render with seed-data server names attached to real
+  // (live) tool ids. That's a misleading attribution, not a benign
+  // degradation. Surface it as a page-level error so the operator
+  // knows the grouping can't be trusted.
+  if (serversQ.isError) {
+    return (
+      <div className="page" role="alert" data-testid="tools-servers-error">
+        <EmptyState
+          icon={<I.AlertTriangle size={26}/>}
+          title="Couldn't load servers"
+          body={
+            (serversQ.error?.message || 'Failed to load the server registry.')
+            + ' Tool grouping by server requires the server list — please retry.'
+          }
+          action={
+            <button type="button" className="btn primary"
+                    data-testid="tools-servers-error-retry"
+                    onClick={() => { void serversQ.refetch(); void toolsQ.refetch(); }}>
+              <I.Refresh size={13}/> Retry
+            </button>
+          }
+        />
+      </div>
+    );
+  }
 
   if (liveTools.length === 0) {
     return (

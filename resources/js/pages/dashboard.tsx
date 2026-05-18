@@ -23,7 +23,6 @@ import {
   fmtRelative, fmtTime, fmtDuration, fmtNum,
 } from '../lib/ui';
 import { useServers, useAudit, useBreakers } from '../lib/queries/hooks';
-import { DataState } from '../lib/data-state';
 
 // ============== Dashboard ==============
 
@@ -207,7 +206,34 @@ function TopTools({ onSelectTool }) {
   );
 }
 
-function RecentFailures({ rows, onSelectAudit }) {
+function RecentFailures({ rows, onSelectAudit, queryError, onRetry }) {
+  // R14: when the underlying audit query failed, never render the "no
+  // recent failures" empty state — that reads as good news while
+  // actually we have NO data. Surface a card-level error with retry
+  // so the operator sees the gap instead of being misled.
+  if (queryError) {
+    return (
+      <div className="card" role="alert" data-testid="dashboard-failures-error">
+        <div className="card-head">
+          <div className="card-title">
+            <I.AlertTriangle size={14} className="tertiary"/>
+            Recent failures
+          </div>
+        </div>
+        <div className="card-body">
+          <p className="muted" style={{ marginTop: 0 }}>
+            Couldn't load the audit feed: {queryError?.message || 'an unexpected error occurred.'}
+          </p>
+          <button type="button" className="btn sm"
+                  data-testid="dashboard-failures-error-retry"
+                  onClick={onRetry}>
+            <I.Refresh size={11}/> Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const failures = rows.filter(a => Number(a.status) >= 400 || a.status === 'err' || a.status === 'error').slice(0, 6);
   if (failures.length === 0) {
     return (
@@ -278,7 +304,7 @@ function RecentFailures({ rows, onSelectAudit }) {
   );
 }
 
-function DashboardReady({ servers, audit, breakers, liveEvents, livePaused, onTogglePaused, onClearFeed, onNav, onSelectAudit }) {
+function DashboardReady({ servers, audit, breakers, auditError, breakersError, onRetryAudit, onRetryBreakers, liveEvents, livePaused, onTogglePaused, onClearFeed, onNav, onSelectAudit }) {
   // Wire shape doesn't carry calls_1h / errors_1h / p95 yet — fall back to
   // the fixture by id where we can, else use 0. This keeps KPI rendering
   // identical until the BE exposes telemetry endpoints.
@@ -326,6 +352,30 @@ function DashboardReady({ servers, audit, breakers, liveEvents, livePaused, onTo
           </button>
         </div>
       </div>
+
+      {(auditError || breakersError) && (
+        <div className="banner warn" role="alert" data-testid="dashboard-secondary-error" style={{ marginBottom: 14 }}>
+          <span className="banner-icon"><I.AlertTriangle size={16}/></span>
+          <div className="banner-body">
+            {auditError && breakersError
+              ? 'Audit feed and circuit-breaker data failed to load — KPIs and the failures panel below may be incomplete.'
+              : auditError
+                ? 'Audit feed failed to load — the failures panel below shows the gap explicitly.'
+                : 'Circuit-breaker data failed to load — the "Circuit breakers" KPI below shows 0 because the query errored, not because every breaker is closed.'}
+            {' '}
+            {(auditError?.message || breakersError?.message) && (
+              <span className="tertiary mono" style={{ fontSize: 11 }}>
+                {auditError?.message || breakersError?.message}
+              </span>
+            )}
+          </div>
+          <button type="button" className="btn sm"
+                  data-testid="dashboard-secondary-error-retry"
+                  onClick={() => { if (auditError) onRetryAudit(); if (breakersError) onRetryBreakers(); }}>
+            <I.Refresh size={11}/> Retry
+          </button>
+        </div>
+      )}
 
       <div className="kpi-grid" data-tour="kpi-strip">
         <KPI
@@ -388,7 +438,9 @@ function DashboardReady({ servers, audit, breakers, liveEvents, livePaused, onTo
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 16 }}>
         <TopTools onSelectTool={(t) => onNav(`tool/${t.server_id}/${t.name}`)}/>
-        <RecentFailures rows={audit} onSelectAudit={(row) => onSelectAudit(row.id || 'aud_search_142ms')}/>
+        <RecentFailures rows={audit} onSelectAudit={(row) => onSelectAudit(row.id || 'aud_search_142ms')}
+                         queryError={auditError}
+                         onRetry={onRetryAudit}/>
       </div>
     </div>
   );
@@ -451,11 +503,22 @@ function DashboardPage({ liveEvents, livePaused, onTogglePaused, onClearFeed, on
     );
   }
 
+  // R14: `serversQ` is load-bearing — when it fails we render the page
+  // error above. `auditQ` and `breakersQ` are secondary; their failures
+  // should NOT replace the whole dashboard, but they MUST be surfaced
+  // visibly so operators don't read "0 failures / all closed" as good
+  // news while the underlying query is errored. We render inline
+  // warning banners next to the affected sections instead of silently
+  // degrading to empty arrays.
   return (
     <DashboardReady
       servers={servers}
       audit={auditQ.data ?? []}
       breakers={breakersQ.data ?? []}
+      auditError={auditQ.isError ? (auditQ.error as Error | undefined) : null}
+      breakersError={breakersQ.isError ? (breakersQ.error as Error | undefined) : null}
+      onRetryAudit={() => { void auditQ.refetch(); }}
+      onRetryBreakers={() => { void breakersQ.refetch(); }}
       liveEvents={liveEvents}
       livePaused={livePaused}
       onTogglePaused={onTogglePaused}

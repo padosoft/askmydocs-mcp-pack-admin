@@ -7,9 +7,6 @@
 
 import React from 'react';
 import {
-  TENANTS,
-} from '../lib/data';
-import {
   Icon, I, StatusDot, Transport, Sparkline,
   fmtRelative, fmtTime, fmtTimeMs, fmtDateTime, fmtDuration, fmtBytes, fmtNum,
   jsonHighlight, useToast, Modal, Drawer, TypeToConfirmModal,
@@ -25,17 +22,24 @@ import {
 function ResourcesPage({ onNav }) {
   const serversQ = useServers();
   const liveServers = (serversQ.data?.data ?? []).filter(s => s.enabled !== false);
-  const [serverId, setServerId] = React.useState(null);
+  const [userPickedServerId, setUserPickedServerId] = React.useState(null);
   const [selectedUri, setSelectedUri] = React.useState(null);
   const [previewTab, setPreviewTab] = React.useState('rendered');
   const [openDirs, setOpenDirs] = React.useState({});
 
-  // Auto-pick first server when the list lands.
-  React.useEffect(() => {
-    if (!serverId && liveServers.length > 0) {
-      setServerId(liveServers[0].id);
-    }
-  }, [serverId, liveServers.length]);
+  // R14 / R17: derive `serverId` synchronously so the first paint after
+  // `serversQ` resolves already has a valid id. The previous code held a
+  // `useState(null)` + post-mount `useEffect` to pick the first server,
+  // which meant ONE render between "servers loaded" and "auto-pick fired"
+  // where `useResources(null)` was disabled and the tree rendered the
+  // "No resources advertised" empty state for a frame — confusing for
+  // operators and a falsely-empty signal for screen readers. Now the
+  // effective serverId is computed in render: explicit user pick wins,
+  // else first live server, else null (still null while serversQ is
+  // pending — but in that path we exit through the loading branch
+  // below before reaching here).
+  const serverId = userPickedServerId ?? liveServers[0]?.id ?? null;
+  const setServerId = setUserPickedServerId;
 
   const resourcesQ = useResources(serverId);
   const contentQ = useResource(serverId, selectedUri);
@@ -342,18 +346,15 @@ function JsonPreview({ source }) {
 function PromptsPage({ onNav }) {
   const serversQ = useServers();
   const liveServers = (serversQ.data?.data ?? []).filter(s => s.enabled !== false);
-  const [serverId, setServerId] = React.useState(null);
+  // Same render-time derivation as `ResourcesPage` above — see the
+  // comment there for the rationale.
+  const [userPickedServerId, setUserPickedServerId] = React.useState(null);
+  const serverId = userPickedServerId ?? liveServers[0]?.id ?? null;
+  const setServerId = setUserPickedServerId;
   const promptsQ = usePrompts(serverId);
   const [selectedName, setSelectedName] = React.useState(null);
   const promptQ = usePrompt(serverId, selectedName);
   const [q, setQ] = React.useState('');
-
-  // Auto-pick first server.
-  React.useEffect(() => {
-    if (!serverId && liveServers.length > 0) {
-      setServerId(liveServers[0].id);
-    }
-  }, [serverId, liveServers.length]);
 
   const allPrompts = promptsQ.data ?? [];
   // Cross-server flat list with server_name attached so the existing UI

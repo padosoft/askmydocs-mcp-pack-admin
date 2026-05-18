@@ -20,7 +20,6 @@ import { Breadcrumbs, ROUTES, SECONDARY } from '../components/shell';
 import {
   useAudit, useAuditDetail, useBreakers, useServers,
 } from '../lib/queries/hooks';
-import { DataState } from '../lib/data-state';
 
 // ============== Audit log + drilldown drawer ==============
 
