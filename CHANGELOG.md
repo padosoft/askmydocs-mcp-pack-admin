@@ -3,7 +3,54 @@
 All notable changes to `padosoft/askmydocs-mcp-pack-admin` are documented here.
 The project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] → v1.1.0
+## [v1.1.0] — 2026-05-18
+
+GA release of the live wire-up cycle. The SPA is now fully functional
+against the real `padosoft/askmydocs-mcp-pack` v1.5+ backend — every
+read- and write-path action calls the host API. The bundled prototype
+fixtures (`resources/js/lib/data.ts`) survive only as graceful
+fallbacks for telemetry fields the BE doesn't yet emit (sparklines,
+percentiles, etc.).
+
+### Highlights
+
+- **22 endpoints** typed end-to-end via the `request()` helper in
+  `resources/js/lib/api/client.ts` + 19 hand-written types mirroring
+  the v1.5 OpenAPI spec.
+- **13 read hooks + 10 mutation hooks** wiring every page surface
+  (Dashboard / Servers list+detail / new-server wizard / Tools matrix
+  + playground / Audit list+drilldown / Resources tree+content /
+  Prompts library / Circuit breakers grid).
+- **R21 two-call confirm-token protocol** on `useInvokeTool` /
+  `useReplayAudit` / `useResetBreaker`, with a second-leg expired-
+  token guard that surfaces a hard failure instead of looping.
+- **SSE live-feed consumer** in `App.tsx` replacing the prototype's
+  synthetic `setInterval` simulator. `livePausedRef` lets pause drop
+  events without disconnecting; events deduped by id; cap 200.
+- **R14 (surface failures loudly) + R11 (testid contract) + R15
+  (a11y)** invariants enforced via the shared `<DataState>` wrapper
+  + page-level fallback branches.
+- **154 Vitest specs** across 22 test files covering loading / error
+  / empty / ready states + R21 happy + failure paths + ValidationError
+  field-error surfacing + SSE consumer mount / dispatch / dedupe /
+  teardown.
+
+### Deferred to v1.1.x
+
+The 12 fixture-based Playwright specs that shipped with v1.0.x are
+parked under `frontend/e2e-pending-v1.1.x/` because they assert on
+prototype seed data that no longer appears once the SPA hits the live
+API. CI now runs a single `frontend/e2e/smoke.spec.ts` that verifies
+the SPA bundle mounts + the primary nav is reachable.
+
+A real-backend Playwright suite (testbench Laravel host that
+composer-requires `padosoft/askmydocs-mcp-pack:^1.5` + deterministic
+`E2EDemoSeeder` + R38-compliant CLI migrate+seed step + spec
+rewrites against the seeded dataset) is tracked in
+[`docs/W5-E2E-REWRITE.md`](docs/W5-E2E-REWRITE.md) for a v1.1.x patch.
+Page-level wire-up confidence comes from the 154 Vitest specs — every
+endpoint binding has loading / error / empty / ready coverage via
+MSW handlers shaped to the real wire schema.
 
 ### Fixed — W4 iter-2 review (Codex P2 — expired confirm-token loop)
 
