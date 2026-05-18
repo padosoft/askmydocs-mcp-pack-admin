@@ -25,6 +25,7 @@ import { ToolsPage } from './pages/tools';
 import { ResourcesPage, PromptsPage } from './pages/resources';
 import { AuditPage, AuditDrilldown, BreakersPage } from './pages/audit';
 import { PlaygroundPage, SettingsPage, HelpPage } from './pages/misc';
+import { subscribeEvents } from './lib/api/endpoints';
 
 function routeKeyFromPath(pathname: string) {
   const segments = pathname.replace(/^\/|\/$/g, '').split('/').filter(Boolean);
@@ -96,33 +97,45 @@ function Shell() {
     [navigate],
   );
 
-  // Live feed simulator (per prototype).
+  // Live feed — SSE consumer (W4). Subscribe ONCE on mount; the
+  // EventSource stays open even when the user pauses, so toggling
+  // pause/resume is instant and doesn't reconnect. While paused we
+  // drop incoming events; while live we dedupe by id and prepend.
+  //
+  // We use a ref to peek `livePaused` inside the stable handler so
+  // changing the pause flag doesn't tear down + recreate the
+  // EventSource (which would lose events during reconnect).
+  const livePausedRef = React.useRef(livePaused);
+  React.useEffect(() => { livePausedRef.current = livePaused; }, [livePaused]);
+
   React.useEffect(() => {
-    if (livePaused) return;
-    const id = setInterval(() => {
-      const srv = SERVERS[Math.floor(Math.random() * SERVERS.length)];
-      const tools = (TOOLS as any)[srv.id] || [];
-      const tool = tools[Math.floor(Math.random() * tools.length)];
-      const r = Math.random();
-      const status =
-        srv.id === 'srv_07' && r < 0.75 ? 504 : srv.id === 'srv_03' && r < 0.18 ? 502 : r < 0.04 ? 500 : 200;
-      const ev: any = {
-        id: `live_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        ts: Date.now() - (Date.now() - NOW) + Math.random() * 1000,
-        server: srv.name,
-        server_id: srv.id,
-        method: 'tools/call',
-        tool: tool?.name || 'invoke',
-        dur: Math.round(srv.p50 * (0.6 + Math.random() * 1.2)),
-        status,
-        isNew: true,
-        auditId: 'aud_' + Math.random().toString(36).slice(2, 10),
-      };
-      setLiveEvents((prev) => [ev, ...prev.map((p) => ({ ...p, isNew: false }))].slice(0, 200));
-      setLastTick(Date.now());
-    }, 1800 + Math.random() * 2200);
-    return () => clearInterval(id);
-  }, [livePaused]);
+    const cleanup = subscribeEvents(
+      (ev: any) => {
+        if (livePausedRef.current) return;
+        const enriched: any = {
+          ...ev,
+          isNew: true,
+          auditId: ev.audit_id || ev.id,
+        };
+        setLiveEvents((prev: any[]) => {
+          // Dedupe by id (R25 spirit — the same event id should never
+          // appear twice in the feed even if the server resends).
+          const id = enriched.id;
+          const without = prev.filter((p) => p.id !== id);
+          return [enriched, ...without.map((p) => ({ ...p, isNew: false }))].slice(0, 200);
+        });
+        setLastTick(Date.now());
+      },
+      () => {
+        // EventSource auto-reconnects per spec; we just log here so the
+        // operator can see disconnects in the console without crashing
+        // the live feed.
+        // eslint-disable-next-line no-console
+        console.warn('[live-feed] SSE error — auto-reconnecting');
+      },
+    );
+    return cleanup;
+  }, []);
 
   // Keyboard shortcuts (Cmd+K, g d/s/t/r/p/a/c, Cmd+1..7).
   const gPrefixRef = React.useRef(false);

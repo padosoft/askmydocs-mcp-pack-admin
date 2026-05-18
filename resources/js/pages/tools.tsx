@@ -23,6 +23,8 @@ import {
 } from '../lib/ui';
 import { Breadcrumbs, ROUTES, SECONDARY } from '../components/shell';
 import { useTools, useServers, useAudit } from '../lib/queries/hooks';
+import { useInvokeTool } from '../lib/mutations/hooks';
+import { ConfirmTokenError, ValidationError } from '../lib/api/errors';
 import { DataState } from '../lib/data-state';
 
 // ============== Tools explorer + Try-it playground ==============
@@ -272,40 +274,87 @@ function ToolPlayground({ tool, toast }) {
   const [rawMode, setRawMode] = React.useState(false);
   const [raw, setRaw] = React.useState(JSON.stringify(initial, null, 2));
   const [resp, setResp] = React.useState(null);
-  const [loading, setLoading] = React.useState(false);
-  const [confirmDanger, setConfirmDanger] = React.useState(false);
+  // R21: two-call confirm-token protocol. When the BE first replies 202
+  // with a minted token, we stash it here + open the confirm modal. The
+  // user types the phrase, we re-call with the token. The token mint
+  // disappears either on success/error or when the modal closes.
+  const [pendingConfirm, setPendingConfirm] = React.useState(null);
+  const [fieldErrors, setFieldErrors] = React.useState({});
+  const invokeM = useInvokeTool();
+  const loading = invokeM.isPending;
 
-  const setArg = (k, v) => setArgs(a => ({ ...a, [k]: v }));
-
-  const invoke = () => {
-    if (tool.destructive && !confirmDanger) {
-      setConfirmDanger(true);
-      return;
+  const setArg = (k, v) => {
+    setArgs(a => ({ ...a, [k]: v }));
+    if (fieldErrors[k]) {
+      setFieldErrors(prev => {
+        const next = { ...prev };
+        delete next[k];
+        return next;
+      });
     }
-    setLoading(true);
+  };
+
+  // The actual invocation. `confirmToken` is undefined on the first call
+  // (R21 first leg) and populated on the second leg after operator typed
+  // the confirm phrase.
+  const doInvoke = async (confirmToken) => {
     setResp(null);
-    setTimeout(() => {
-      setLoading(false);
-      const dur = Math.round(tool.p50 * (0.7 + Math.random() * 0.6));
+    setFieldErrors({});
+    try {
+      const t0 = Date.now();
+      const result = await invokeM.mutateAsync({
+        serverId: tool.server_id,
+        toolName: tool.name,
+        args,
+        confirmToken,
+      });
+      const dur = Date.now() - t0;
       setResp({
         status: 200,
         dur,
-        audit_id: 'aud_' + Math.random().toString(36).slice(2, 10),
-        body: {
-          content: [{
-            type: 'text',
-            text: tool.name === 'search'
-              ? `## Top results for "${args.q || 'your query'}"\n\n1. **MCP Spec v2026.5** — modelcontextprotocol.io/spec\n2. **Anthropic Engineering — MCP at scale** — anthropic.com/engineering/mcp\n3. **Padosoft MCP Pack** — github.com/padosoft/askmydocs-mcp-pack\n\nFound 847 results in 142ms.`
-              : tool.name === 'summarise'
-              ? `**Summary (${args.bullets || 5} bullets):**\n- ${(args.text || 'Source text…').slice(0, 60)}…\n- Key argument: …\n- Methodology: …\n- Limitations: …\n- Conclusion: …`
-              : `Tool invocation complete. Mock response payload here.`,
-          }],
-          isError: false,
-        },
+        audit_id: (result && (result.audit_id || result.id)) || 'aud_' + Math.random().toString(36).slice(2, 10),
+        body: result,
       });
-      toast.push({ kind: 'ok', title: `${tool.name} succeeded`, body: `${dur}ms · audit aud_${Math.random().toString(36).slice(2, 6)}` });
-    }, 600 + Math.random() * 600);
+      toast.push({ kind: 'ok', title: `${tool.name} succeeded`, body: `${dur}ms` });
+    } catch (err) {
+      if (err instanceof ConfirmTokenError) {
+        // R21 second-leg failure: the operator already typed the confirm
+        // phrase and we sent `confirmToken`, but the server still rejected
+        // (token expired past `expires_in`, was already consumed by another
+        // tab, or simply invalid). Without a FRESH mint we have no token
+        // to retry with, so re-opening the modal would loop forever on the
+        // same stale state. Surface as a hard failure instead.
+        const freshMint = err.confirmTokenMint?.confirm_token;
+        if (confirmToken && !freshMint) {
+          const msg = err.message
+            || `Confirmation token rejected (${err.reason || 'invalid'}). Click Run again to start a new confirmation.`;
+          setResp({ status: err.status || 422, dur: 0, audit_id: '—', body: { error: msg, code: 'confirmation_invalid', reason: err.reason } });
+          toast.push({ kind: 'err', title: `${tool.name} failed`, body: msg });
+          return;
+        }
+        // R21 first leg (or second leg that the server re-minted): open
+        // confirm modal with the server-minted token.
+        setPendingConfirm({
+          token: freshMint,
+          expires_in: err.confirmTokenMint?.expires_in,
+          reason: err.reason,
+        });
+        return;
+      }
+      if (err instanceof ValidationError) {
+        const next = {};
+        Object.entries(err.fieldErrors || {}).forEach(([k, v]) => { next[k] = Array.isArray(v) ? v[0] : String(v); });
+        setFieldErrors(next);
+        toast.push({ kind: 'err', title: 'Validation failed', body: err.message || 'Please review the highlighted fields.' });
+        return;
+      }
+      const msg = (err && err.message) || 'Unknown error';
+      setResp({ status: err?.status || 500, dur: 0, audit_id: '—', body: { error: msg } });
+      toast.push({ kind: 'err', title: `${tool.name} failed`, body: msg });
+    }
   };
+
+  const invoke = () => { void doInvoke(undefined); };
 
   return (
     <>
@@ -333,13 +382,31 @@ function ToolPlayground({ tool, toast }) {
             )}
           </div>
           <div className="flex-h" style={{ padding: 12, borderTop: '1px solid var(--border)', gap: 8 }}>
-            <button className="btn primary" onClick={invoke} disabled={loading}>
+            <button className="btn primary"
+                    data-testid="tools-playground-invoke"
+                    onClick={invoke} disabled={loading}>
               {loading ? <I.Loader size={13}/> : <I.Play size={13}/>}
               {loading ? 'Invoking…' : 'Invoke tool'}
             </button>
             <span style={{ flex: 1 }}/>
             <button className="btn ghost" onClick={() => setArgs(initial)}>Reset</button>
           </div>
+          {Object.keys(fieldErrors).length > 0 && (
+            <div className="banner err" style={{ margin: 12 }} role="alert"
+                 data-testid="tools-playground-field-errors">
+              <span className="banner-icon"><I.XCircle size={16}/></span>
+              <div className="banner-body">
+                <b>Validation errors</b>
+                <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
+                  {Object.entries(fieldErrors).map(([k, v]) => (
+                    <li key={k} data-testid={`tools-playground-error-${k}`}>
+                      <span className="mono">{k}</span>: {v}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
         </div>
         <div className="playground-pane">
           <div className="flex-h-between" style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
@@ -362,23 +429,19 @@ function ToolPlayground({ tool, toast }) {
           </div>
         </div>
       </div>
-      <Modal open={confirmDanger}
-             onClose={() => setConfirmDanger(false)}
-             title="Confirm destructive action"
-             sub={`Tool "${tool.name}" is marked destructive — it may write or mutate state.`}
-             footer={<>
-               <button className="btn" onClick={() => setConfirmDanger(false)}>Cancel</button>
-               <button className="btn danger" onClick={() => { setConfirmDanger(false); invoke(); }}>
-                 <I.Send size={13}/> Invoke anyway
-               </button>
-             </>}>
-        <div className="row-gap-8">
-          <p className="muted" style={{ margin: 0 }}>
-            Effects may include creating resources, modifying records, or sending external messages. Review your arguments carefully.
-          </p>
-          <pre className="code-block" dangerouslySetInnerHTML={{ __html: jsonHighlight(args) }}/>
-        </div>
-      </Modal>
+      <TypeToConfirmModal
+        open={!!pendingConfirm}
+        onClose={() => setPendingConfirm(null)}
+        onConfirm={() => {
+          const token = pendingConfirm?.token;
+          setPendingConfirm(null);
+          void doInvoke(token);
+        }}
+        title={`Confirm destructive invocation of ${tool.name}?`}
+        body={`The server requires a confirmation token for this tool (reason: ${pendingConfirm?.reason || 'required'}). Token mint expires in ${pendingConfirm?.expires_in ?? '—'}s. Review your arguments before confirming.`}
+        phrase={`invoke-${tool.name}`}
+        dangerLabel="Invoke tool"
+      />
     </>
   );
 }

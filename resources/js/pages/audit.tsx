@@ -20,6 +20,8 @@ import { Breadcrumbs, ROUTES, SECONDARY } from '../components/shell';
 import {
   useAudit, useAuditDetail, useBreakers, useServers,
 } from '../lib/queries/hooks';
+import { useReplayAudit, useResetBreaker } from '../lib/mutations/hooks';
+import { ConfirmTokenError } from '../lib/api/errors';
 
 // ============== Audit log + drilldown drawer ==============
 
@@ -268,6 +270,38 @@ function AuditDrilldown({ auditId, onClose, toast }) {
   const live = projectWireAuditDetail(detailQ.data);
   const detail = live ? { ...FALLBACK_AUDIT_DETAIL, ...live } : FALLBACK_AUDIT_DETAIL;
   const [showReplay, setShowReplay] = React.useState(false);
+  const [pendingReplayToken, setPendingReplayToken] = React.useState(null);
+  const replayM = useReplayAudit();
+
+  // R21: first-leg call (no token). If server demands confirm, stash the
+  // mint and open the confirm modal. The user types the phrase, we
+  // re-call with the token on the second leg.
+  const doReplay = async (confirmToken) => {
+    try {
+      await replayM.mutateAsync({ id: auditId, confirmToken });
+      toast.push({ kind: 'ok', title: 'Replay queued', body: `Re-invoking ${detail.tool} with original arguments…`, action: { label: 'View audit', onClick: () => undefined } });
+    } catch (err) {
+      if (err instanceof ConfirmTokenError) {
+        // R21 second-leg expired-token guard: if we already sent a token
+        // and the server didn't re-mint, treat it as a hard failure to
+        // avoid an infinite re-confirm loop (operator must click Replay
+        // again to start fresh).
+        const freshMint = err.confirmTokenMint?.confirm_token ?? null;
+        if (confirmToken && !freshMint) {
+          toast.push({ kind: 'err', title: 'Replay failed',
+            body: err.message
+              || `Confirmation token rejected (${err.reason || 'invalid'}). Click Replay again to start a new confirmation.` });
+          setShowReplay(false);
+          setPendingReplayToken(null);
+          return;
+        }
+        setPendingReplayToken(freshMint);
+        setShowReplay(true);
+        return;
+      }
+      toast.push({ kind: 'err', title: 'Replay failed', body: (err && err.message) || 'Unknown error' });
+    }
+  };
 
   return (
     <Drawer open={!!auditId} onClose={onClose}
@@ -281,7 +315,10 @@ function AuditDrilldown({ auditId, onClose, toast }) {
                         onClick={() => { navigator.clipboard?.writeText(window.location.href); toast.push({ kind: 'ok', title: 'Permalink copied', body: auditId }); }}>
                   <I.Copy size={12}/> Permalink
                 </button>
-                <button className="btn sm" onClick={() => setShowReplay(true)}>
+                <button className="btn sm"
+                        data-testid="audit-drilldown-replay"
+                        disabled={replayM.isPending}
+                        onClick={() => { void doReplay(undefined); }}>
                   <I.Replay size={12}/> Replay
                 </button>
               </>
@@ -400,9 +437,12 @@ function AuditDrilldown({ auditId, onClose, toast }) {
 
       <TypeToConfirmModal
         open={showReplay}
-        onClose={() => setShowReplay(false)}
+        onClose={() => { setShowReplay(false); setPendingReplayToken(null); }}
         onConfirm={() => {
-          toast.push({ kind: 'ok', title: 'Replay started', body: `Re-invoking ${detail.tool} with original arguments…`, action: { label: 'View result', onClick: () => {} } });
+          const token = pendingReplayToken;
+          setShowReplay(false);
+          setPendingReplayToken(null);
+          void doReplay(token);
         }}
         title={`Replay invocation of ${detail.tool}?`}
         body={`This will re-send the original request to ${detail.server}. The result will appear as a new audit row.`}
@@ -430,6 +470,12 @@ function BreakersPage({ onNav, toast }) {
   const [stateFilter, setStateFilter] = React.useState('all');
   const [resetting, setResetting] = React.useState(null);
   const [tick, setTick] = React.useState(0);
+  // R21: when the BE returns 202 on the first reset call, stash the
+  // minted token + swap the confirm modal into TypeToConfirm mode. The
+  // simple Modal handles non-destructive servers (server returns 200
+  // directly without token).
+  const [pendingResetToken, setPendingResetToken] = React.useState(null);
+  const resetM = useResetBreaker();
 
   // Live countdown for the reopens-in display.
   React.useEffect(() => {
@@ -490,11 +536,36 @@ function BreakersPage({ onNav, toast }) {
     closed: breakers.filter(b => norm(b.state) === 'closed').length,
   };
 
-  const doReset = () => {
+  const doReset = async (confirmToken) => {
     if (!resetting) return;
-    // W4 wires the actual mutation. For now: toast + close (fixture parity).
-    toast.push({ kind: 'ok', title: `Breaker reset`, body: `${resetting.server || resetting.server_id || resetting.key} / ${resetting.tool || resetting.tool_name || '—'} — traffic resumed`, action: { label: 'View audit', onClick: () => onNav('audit') } });
-    setResetting(null);
+    const key = resetting.key || resetting.id;
+    try {
+      await resetM.mutateAsync({ key, confirmToken });
+      toast.push({ kind: 'ok', title: 'Breaker reset', body: `${resetting.server || resetting.server_id || resetting.key} / ${resetting.tool || resetting.tool_name || '—'} — traffic resumed`, action: { label: 'View audit', onClick: () => onNav('audit') } });
+      setResetting(null);
+      setPendingResetToken(null);
+    } catch (err) {
+      if (err instanceof ConfirmTokenError) {
+        // R21 second-leg expired-token guard: if we already sent a token
+        // and the server didn't re-mint, treat it as a hard failure to
+        // avoid an infinite re-confirm loop (operator must click Reset
+        // again to start fresh).
+        const freshMint = err.confirmTokenMint?.confirm_token ?? null;
+        if (confirmToken && !freshMint) {
+          toast.push({ kind: 'err', title: 'Reset failed',
+            body: err.message
+              || `Confirmation token rejected (${err.reason || 'invalid'}). Click Reset again to start a new confirmation.` });
+          setResetting(null);
+          setPendingResetToken(null);
+          return;
+        }
+        // R21 first leg — stash the mint and let the modal flip into
+        // type-to-confirm mode for the second leg.
+        setPendingResetToken(freshMint);
+        return;
+      }
+      toast.push({ kind: 'err', title: 'Reset failed', body: (err && err.message) || 'Unknown error' });
+    }
   };
 
   if (breakers.length === 0) {
@@ -595,18 +666,41 @@ function BreakersPage({ onNav, toast }) {
         })}
       </div>
 
-      <Modal open={!!resetting}
-             onClose={() => setResetting(null)}
+      {/* R21: when no token has been minted yet, show a simple confirm
+          modal that fires the first-leg call. If the BE replies 202 the
+          first call surfaces `pendingResetToken` and the
+          TypeToConfirmModal below takes over for the second leg. Servers
+          that don't require a token finish the operation on the first
+          click. */}
+      <Modal open={!!resetting && pendingResetToken === null}
+             onClose={() => { setResetting(null); setPendingResetToken(null); }}
              title={resetting ? `Reset breaker?` : ''}
              sub={resetting ? `${resetting.server || resetting.server_id || resetting.key} / ${resetting.tool || resetting.tool_name || '—'}` : ''}
              footer={resetting && <>
                <button className="btn" onClick={() => setResetting(null)}>Cancel</button>
-               <button className="btn primary" onClick={doReset}><I.Refresh size={13}/>Reset breaker</button>
+               <button className="btn primary"
+                       data-testid="breakers-reset-confirm"
+                       disabled={resetM.isPending}
+                       onClick={() => { void doReset(undefined); }}>
+                 <I.Refresh size={13}/>Reset breaker
+               </button>
              </>}>
         <p className="muted" style={{ margin: 0 }}>
           Resetting the breaker allows traffic to resume immediately. If the upstream is still failing, the breaker will trip again on the next failure threshold.
         </p>
       </Modal>
+      <TypeToConfirmModal
+        open={!!resetting && pendingResetToken !== null}
+        onClose={() => { setResetting(null); setPendingResetToken(null); }}
+        onConfirm={() => {
+          const token = pendingResetToken;
+          void doReset(token);
+        }}
+        title={`Confirm breaker reset?`}
+        body={`Server requires a confirmation token for this reset. Resetting allows traffic to resume immediately.`}
+        phrase={`reset-${resetting?.key || resetting?.id || 'breaker'}`}
+        dangerLabel="Reset breaker"
+      />
     </div>
   );
 }

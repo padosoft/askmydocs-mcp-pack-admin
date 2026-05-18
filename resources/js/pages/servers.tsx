@@ -1,12 +1,15 @@
 // @ts-nocheck
-// W3: read-paths wired. `ServersListPage` + `ServerDetailPage` are now
-// hook-backed via `useServers({...filters})`, `useServer(id)`,
-// `useServerTools(id)`, `useResources(id)`, `usePrompts(id)`, `useAudit({
-// server_id })`. The wire schema for `McpServer` is intentionally minimal
-// (id / name / transport / url / status / enabled / tenant). Visual extras
-// the fixture carries (sparklines, p50/p95/p99, calls_1h / errors_1h)
-// gracefully degrade to "—" or empty arrays when the live wire doesn't
-// carry them. W4 wires mutations; W5 wires per-server telemetry.
+// W3: read-paths wired. W4: mutations wired. `ServersListPage` + the
+// bulk-bar + `ServerDetailPage` edit/handshake/delete actions now call
+// real mutation hooks (`useDeleteServer`, `useUpdateServer`,
+// `useHandshake`). `ServerNewPage` submits via `useCreateServer`. Every
+// mutation surfaces failures via toast (R14) and tags new action buttons
+// with stable testids (R11/R29 — `servers-bulk-{action}`,
+// `server-detail-{action}`).
+//
+// Optimistic delete UX (R25 spirit): bulk delete clears the selection
+// immediately so the operator sees feedback; the row removal happens via
+// `invalidateQueries({queryKey: keys.servers.all()})` inside the hook.
 
 import React from 'react';
 import {
@@ -22,6 +25,10 @@ import { Breadcrumbs, ROUTES, SECONDARY } from '../components/shell';
 import {
   useServers, useServer, useServerTools, useResources, usePrompts, useAudit,
 } from '../lib/queries/hooks';
+import {
+  useCreateServer, useUpdateServer, useDeleteServer, useHandshake,
+} from '../lib/mutations/hooks';
+import { ValidationError } from '../lib/api/errors';
 import { DataState } from '../lib/data-state';
 
 // ============== Servers: list + detail + new wizard ==============
@@ -32,6 +39,9 @@ function ServersListPage({ onNav, toast }) {
   const [transportFilter, setTransportFilter] = React.useState('all');
   const [q, setQ] = React.useState('');
   const [confirmDelete, setConfirmDelete] = React.useState(null);
+  const deleteServerM = useDeleteServer();
+  const updateServerM = useUpdateServer();
+  const handshakeM = useHandshake();
 
   const filters = React.useMemo(() => {
     // The UI status chips are an OPERATOR view (`active` = enabled & not
@@ -290,16 +300,51 @@ function ServersListPage({ onNav, toast }) {
         <div className="bulk-bar">
           <span className="bulk-count">{selected.size} selected</span>
           <span className="bulk-sep"/>
-          <button className="btn sm" onClick={() => { toast.push({ kind: 'ok', title: `Handshake started`, body: `Running on ${selected.size} servers…`, action: { label: 'View progress', onClick: () => onNav('audit') } }); }}>
+          <button className="btn sm" data-testid="servers-bulk-handshake"
+                  disabled={handshakeM.isPending}
+                  onClick={async () => {
+                    const ids = Array.from(selected);
+                    const results = await Promise.allSettled(ids.map(id => handshakeM.mutateAsync(id)));
+                    const ok = results.filter(r => r.status === 'fulfilled').length;
+                    const failed = results.length - ok;
+                    if (failed === 0) {
+                      toast.push({ kind: 'ok', title: 'Handshake started', body: `Re-handshook ${ok} server${ok === 1 ? '' : 's'}.`, action: { label: 'View progress', onClick: () => onNav('audit') } });
+                    } else {
+                      toast.push({ kind: 'err', title: 'Handshake partially failed', body: `${ok} succeeded, ${failed} failed.` });
+                    }
+                  }}>
             <I.Handshake size={12}/> Handshake
           </button>
-          <button className="btn sm" onClick={() => toast.push({ kind: 'ok', title: 'Servers enabled', body: `${selected.size} servers now active.` })}>
+          <button className="btn sm" data-testid="servers-bulk-enable"
+                  disabled={updateServerM.isPending}
+                  onClick={async () => {
+                    const ids = Array.from(selected);
+                    const results = await Promise.allSettled(ids.map(id => updateServerM.mutateAsync({ id, patch: { enabled: true } })));
+                    const failed = results.filter(r => r.status === 'rejected').length;
+                    if (failed === 0) {
+                      toast.push({ kind: 'ok', title: 'Servers enabled', body: `${ids.length} server${ids.length === 1 ? '' : 's'} now active.` });
+                    } else {
+                      toast.push({ kind: 'err', title: 'Enable partially failed', body: `${ids.length - failed} succeeded, ${failed} failed.` });
+                    }
+                  }}>
             <I.Power size={12}/> Enable
           </button>
-          <button className="btn sm" onClick={() => toast.push({ kind: 'warn', title: 'Servers disabled', body: `${selected.size} servers paused.`, action: { label: 'Undo', onClick: () => {} } })}>
+          <button className="btn sm" data-testid="servers-bulk-disable"
+                  disabled={updateServerM.isPending}
+                  onClick={async () => {
+                    const ids = Array.from(selected);
+                    const results = await Promise.allSettled(ids.map(id => updateServerM.mutateAsync({ id, patch: { enabled: false } })));
+                    const failed = results.filter(r => r.status === 'rejected').length;
+                    if (failed === 0) {
+                      toast.push({ kind: 'warn', title: 'Servers disabled', body: `${ids.length} server${ids.length === 1 ? '' : 's'} paused.` });
+                    } else {
+                      toast.push({ kind: 'err', title: 'Disable partially failed', body: `${ids.length - failed} succeeded, ${failed} failed.` });
+                    }
+                  }}>
             Disable
           </button>
-          <button className="btn sm danger" onClick={() => setConfirmDelete(true)}>
+          <button className="btn sm danger" data-testid="servers-bulk-delete"
+                  onClick={() => setConfirmDelete(true)}>
             <I.Trash size={12}/> Delete
           </button>
           <span className="bulk-sep"/>
@@ -312,9 +357,23 @@ function ServersListPage({ onNav, toast }) {
       <TypeToConfirmModal
         open={!!confirmDelete}
         onClose={() => setConfirmDelete(null)}
-        onConfirm={() => {
-          toast.push({ kind: 'err', title: `Deleted ${selected.size} servers`, body: 'Audit history was preserved.' });
+        onConfirm={async () => {
+          const ids = Array.from(selected);
+          // Snapshot selection size BEFORE clearing it for the toast text.
+          const count = ids.length;
+          // Optimistic UX: clear selection immediately. The hook
+          // invalidates `keys.servers.all()` so rows refresh on success;
+          // on failure the row reappears via refetch.
           setSelected(new Set());
+          const results = await Promise.allSettled(ids.map(id => deleteServerM.mutateAsync(id)));
+          const failed = results.filter(r => r.status === 'rejected').length;
+          if (failed === 0) {
+            toast.push({ kind: 'err', title: `Deleted ${count} server${count === 1 ? '' : 's'}`, body: 'Audit history was preserved.' });
+          } else {
+            const firstErr = results.find(r => r.status === 'rejected');
+            const errMsg = firstErr && firstErr.reason && firstErr.reason.message ? firstErr.reason.message : 'Unknown error';
+            toast.push({ kind: 'err', title: `Delete partially failed`, body: `${count - failed} deleted, ${failed} failed (${errMsg}).` });
+          }
         }}
         title={`Delete ${selected.size} server${selected.size === 1 ? '' : 's'}?`}
         body="This removes registration and handshake history. Audit log entries are preserved."
@@ -330,6 +389,9 @@ function ServerDetailPage({ serverId, onNav, toast, onOpenAudit }) {
   const serverQ = useServer(serverId);
   const [tab, setTab] = React.useState('overview');
   const [confirmDelete, setConfirmDelete] = React.useState(false);
+  const deleteServerM = useDeleteServer();
+  const updateServerM = useUpdateServer();
+  const handshakeM = useHandshake();
 
   if (serverQ.isLoading || serverQ.isPending) {
     return (
@@ -405,12 +467,34 @@ function ServerDetailPage({ serverId, onNav, toast, onOpenAudit }) {
           </p>
         </div>
         <div className="page-actions">
-          <button className="btn"><I.Handshake size={13}/> Run handshake</button>
-          <button className="btn">
+          <button className="btn" data-testid="server-detail-handshake"
+                  disabled={handshakeM.isPending}
+                  onClick={async () => {
+                    try {
+                      await handshakeM.mutateAsync(liveServer.id);
+                      toast.push({ kind: 'ok', title: 'Handshake complete', body: `${s.name} re-advertised its capabilities.` });
+                    } catch (err) {
+                      toast.push({ kind: 'err', title: 'Handshake failed', body: (err && err.message) || 'Unknown error' });
+                    }
+                  }}>
+            <I.Handshake size={13}/> Run handshake
+          </button>
+          <button className="btn" data-testid="server-detail-toggle-enabled"
+                  disabled={updateServerM.isPending}
+                  onClick={async () => {
+                    const next = !s.enabled;
+                    try {
+                      await updateServerM.mutateAsync({ id: liveServer.id, patch: { enabled: next } });
+                      toast.push({ kind: 'ok', title: next ? 'Server enabled' : 'Server disabled', body: `${s.name} is now ${next ? 'active' : 'paused'}.` });
+                    } catch (err) {
+                      toast.push({ kind: 'err', title: 'Update failed', body: (err && err.message) || 'Unknown error' });
+                    }
+                  }}>
             <I.Power size={13}/> {s.enabled ? 'Disable' : 'Enable'}
           </button>
           <button className="btn"><I.Edit size={13}/> Edit</button>
-          <button className="btn danger" onClick={() => setConfirmDelete(true)}>
+          <button className="btn danger" data-testid="server-detail-delete"
+                  onClick={() => setConfirmDelete(true)}>
             <I.Trash size={13}/> Delete
           </button>
         </div>
@@ -492,9 +576,14 @@ function ServerDetailPage({ serverId, onNav, toast, onOpenAudit }) {
       <TypeToConfirmModal
         open={confirmDelete}
         onClose={() => setConfirmDelete(false)}
-        onConfirm={() => {
-          toast.push({ kind: 'err', title: `Deleted server ${s.name}`, body: 'Audit history was preserved.' });
-          onNav('servers');
+        onConfirm={async () => {
+          try {
+            await deleteServerM.mutateAsync(liveServer.id);
+            toast.push({ kind: 'err', title: `Deleted server ${s.name}`, body: 'Audit history was preserved.' });
+            onNav('servers');
+          } catch (err) {
+            toast.push({ kind: 'err', title: 'Delete failed', body: (err && err.message) || 'Unknown error' });
+          }
         }}
         title={`Delete server "${s.name}"?`}
         body="This removes the server registration and handshake history. Audit log entries are preserved."
@@ -805,6 +894,7 @@ function ServerNewPage({ onNav, toast }) {
     cb_threshold: 5, cb_open_s: 60,
   });
   const [errors, setErrors] = React.useState({});
+  const createServerM = useCreateServer();
 
   const validate = (s) => {
     const e = {};
@@ -824,9 +914,36 @@ function ServerNewPage({ onNav, toast }) {
 
   const next = () => { if (validate(step)) setStep(step + 1); };
   const back = () => setStep(Math.max(1, step - 1));
-  const submit = () => {
-    toast.push({ kind: 'ok', title: `Server ${data.name} registered`, body: 'Running first handshake…', action: { label: 'View audit', onClick: () => onNav('audit') } });
-    setTimeout(() => onNav('servers'), 600);
+  const submit = async () => {
+    // Build wire-shape payload from wizard state. Fields the BE doesn't
+    // know about yet (headers / env / cb_*) are dropped — the wire
+    // `McpServerWrite` shape is the SoT.
+    const body = {
+      name: data.name,
+      transport: data.transport,
+      url: data.transport === 'stdio'
+        ? `${data.command} ${data.args}`.trim()
+        : data.url,
+      enabled: !!data.enabled,
+    };
+    try {
+      await createServerM.mutateAsync(body);
+      toast.push({ kind: 'ok', title: `Server ${data.name} registered`, body: 'Running first handshake…', action: { label: 'View audit', onClick: () => onNav('audit') } });
+      onNav('servers');
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        const next = {};
+        Object.entries(err.fieldErrors || {}).forEach(([k, v]) => { next[k] = Array.isArray(v) ? v[0] : String(v); });
+        setErrors(next);
+        toast.push({ kind: 'err', title: 'Validation failed', body: err.message || 'Please review the highlighted fields.' });
+        // Jump back to the step that surfaces the failing field. Step 1
+        // owns `name`; step 2 owns `url`/`command`.
+        if (next.name) setStep(1);
+        else if (next.url || next.command) setStep(2);
+      } else {
+        toast.push({ kind: 'err', title: 'Failed to register server', body: (err && err.message) || 'Unknown error' });
+      }
+    }
   };
 
   return (
@@ -868,7 +985,12 @@ function ServerNewPage({ onNav, toast }) {
             <span style={{ flex: 1 }}/>
             {step > 1 && <button className="btn" onClick={back}><I.ChevronLeft size={13}/> Back</button>}
             {step < 3 && <button className="btn primary" onClick={next}>Next <I.ChevronRight size={13}/></button>}
-            {step === 3 && <button className="btn primary" onClick={submit}><I.Check size={13}/> Register & handshake</button>}
+            {step === 3 && <button className="btn primary"
+                                   data-testid="servers-new-submit"
+                                   disabled={createServerM.isPending}
+                                   onClick={submit}>
+              <I.Check size={13}/> {createServerM.isPending ? 'Registering…' : 'Register & handshake'}
+            </button>}
           </div>
         </div>
       </div>
