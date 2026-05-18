@@ -1,8 +1,19 @@
 // @ts-nocheck
+// W3: read-paths wired. `ToolsPage` is now hook-backed via `useTools()`
+// (flat aggregator across every registered server) for the sidebar tree,
+// and `useServers()` for grouping. When `initialTool` is passed in (the
+// router for `/tool/:server_id/:name`) we additionally pull the per-server
+// tool list to enrich the detail pane.
+//
+// The fixture `ALL_TOOLS` is retained ONLY as a fallback shape adapter so
+// pre-existing UI bits like `calls_24h` / `p50` / `destructive` flags
+// degrade gracefully when the wire schema doesn't carry them.
+// `ToolPlayground` (try-it) remains fixture-only — it's a write path
+// scheduled for W4.
+
 import React from 'react';
 import {
-  NOW, TENANTS, SERVERS, TOOLS, ALL_TOOLS, AUDIT, AUDIT_DETAIL,
-  BREAKERS, RESOURCES, RESOURCE_CONTENT, PROMPTS, ME, API_KEYS,
+  SERVERS as FALLBACK_SERVERS, ALL_TOOLS as FALLBACK_ALL_TOOLS,
 } from '../lib/data';
 import {
   Icon, I, StatusDot, Transport, Sparkline,
@@ -11,15 +22,15 @@ import {
   Kbd, Skeleton, Tabs, EmptyState,
 } from '../lib/ui';
 import { Breadcrumbs, ROUTES, SECONDARY } from '../components/shell';
+import { useTools, useServers, useAudit } from '../lib/queries/hooks';
+import { DataState } from '../lib/data-state';
 
 // ============== Tools explorer + Try-it playground ==============
 
 function ToolsPage({ onNav, toast, initialTool }) {
-  const [selected, setSelected] = React.useState(() => {
-    if (initialTool) return initialTool;
-    const t = ALL_TOOLS[0];
-    return t ? { server_id: t.server_id, name: t.name } : null;
-  });
+  const toolsQ = useTools();
+  const serversQ = useServers();
+  const [selected, setSelected] = React.useState(initialTool || null);
   const [serverFilter, setServerFilter] = React.useState('all');
   const [q, setQ] = React.useState('');
 
@@ -27,23 +38,87 @@ function ToolsPage({ onNav, toast, initialTool }) {
     if (initialTool) setSelected(initialTool);
   }, [initialTool?.server_id, initialTool?.name]);
 
-  const grouped = SERVERS
-    .filter(s => serverFilter === 'all' || (serverFilter === 'active' && s.enabled && s.status !== 'err')
+  const liveTools = toolsQ.data ?? [];
+  const liveServers = serversQ.data?.data ?? [];
+
+  // Initial-selection bootstrap when no `initialTool` prop AND the live
+  // tool list lands. Pick the first tool so the detail pane isn't empty.
+  React.useEffect(() => {
+    if (!selected && liveTools.length > 0) {
+      setSelected({ server_id: liveTools[0].server_id, name: liveTools[0].name });
+    }
+  }, [selected, liveTools.length]);
+
+  if (toolsQ.isLoading || toolsQ.isPending || serversQ.isLoading || serversQ.isPending) {
+    return (
+      <div className="page" role="status" aria-busy="true" data-testid="tools-loading">
+        <div style={{ padding: 24 }}>
+          <Skeleton w="30%" h={22}/>
+          <div style={{ height: 16 }}/>
+          <Skeleton w="100%" h={14}/>
+          <Skeleton w="90%" h={14}/>
+          <Skeleton w="80%" h={14}/>
+        </div>
+      </div>
+    );
+  }
+  if (toolsQ.isError) {
+    return (
+      <div className="page" role="alert" data-testid="tools-error">
+        <EmptyState
+          icon={<I.AlertTriangle size={26}/>}
+          title="Couldn't load tools"
+          body={toolsQ.error?.message || 'An unexpected error occurred.'}
+          action={
+            <button type="button" className="btn primary"
+                    data-testid="tools-error-retry"
+                    onClick={() => { void toolsQ.refetch(); }}>
+              <I.Refresh size={13}/> Retry
+            </button>
+          }
+        />
+      </div>
+    );
+  }
+
+  if (liveTools.length === 0) {
+    return (
+      <div className="page" role="status" data-testid="tools-empty">
+        <EmptyState
+          icon={<I.Wrench size={26}/>}
+          title="No tools yet"
+          body="Register an MCP server and run a handshake to discover tools."
+          action={<button className="btn primary" onClick={() => onNav('servers')}><I.Server size={12}/>Open servers</button>}
+        />
+      </div>
+    );
+  }
+
+  // Build server -> tools grouping from live data, falling back to fixture
+  // metadata where present.
+  const serverById = {};
+  liveServers.forEach(s => { serverById[s.id] = s; });
+  FALLBACK_SERVERS.forEach(s => { if (!serverById[s.id]) serverById[s.id] = s; });
+
+  const grouped = Object.values(serverById)
+    .filter(s => serverFilter === 'all' || (serverFilter === 'active' && s.enabled !== false && s.status !== 'err')
       || (serverFilter === 'err' && s.status === 'err'))
-    .filter(s => TOOLS[s.id]?.length)
     .map(s => ({
       server: s,
-      tools: (TOOLS[s.id] || []).filter(t =>
-        !q || t.name.toLowerCase().includes(q.toLowerCase()) ||
-        s.name.toLowerCase().includes(q.toLowerCase())
-      ),
+      tools: liveTools
+        .filter(t => t.server_id === s.id)
+        .filter(t => !q || t.name.toLowerCase().includes(q.toLowerCase()) || (s.name || '').toLowerCase().includes(q.toLowerCase())),
     }))
     .filter(g => g.tools.length);
 
-  const sel = selected && ALL_TOOLS.find(t => t.server_id === selected.server_id && t.name === selected.name);
+  // Resolve selected tool — first try live, then fixture for visual fields.
+  const sel = selected && (
+    liveTools.find(t => t.server_id === selected.server_id && t.name === selected.name)
+    ?? FALLBACK_ALL_TOOLS.find(t => t.server_id === selected.server_id && t.name === selected.name)
+  );
 
   return (
-    <div className="page full" style={{ padding: 0, maxWidth: 'none' }}>
+    <div className="page full" style={{ padding: 0, maxWidth: 'none' }} data-testid="tools-ready">
       <div style={{
         display: 'grid', gridTemplateColumns: '260px 1fr',
         height: 'calc(100vh - var(--topbar-h))',
@@ -55,7 +130,9 @@ function ToolsPage({ onNav, toast, initialTool }) {
             <div className="search-input" style={{ maxWidth: 'none' }}>
               <I.Search size={13} className="search-icon"/>
               <input className="input" placeholder="Search tools…"
-                     value={q} onChange={e => setQ(e.target.value)}/>
+                     value={q} onChange={e => setQ(e.target.value)}
+                     data-testid="tools-search-input"
+                     aria-label="Search tools"/>
             </div>
             <div className="filter-bar" style={{ margin: '8px 0 0', gap: 4 }}>
               {[
@@ -117,9 +194,9 @@ function ToolGroup({ server, tools, selected, onSelect }) {
 
 function ToolDetailPane({ tool, toast, onNav }) {
   const [tab, setTab] = React.useState('try');
-  const server = SERVERS.find(s => s.id === tool.server_id);
+  const server = FALLBACK_SERVERS.find(s => s.id === tool.server_id) || { id: tool.server_id, name: tool.server_name || tool.server_id };
   return (
-    <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
+    <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }} data-testid="tool-detail-ready">
       <div className="page-head">
         <div>
           <h1 className="page-title">
@@ -128,13 +205,13 @@ function ToolDetailPane({ tool, toast, onNav }) {
             <span className="mono">{tool.name}</span>
             {tool.destructive && <span className="badge warn"><span className="dot"/>destructive</span>}
           </h1>
-          <p className="page-sub">{tool.desc}</p>
+          <p className="page-sub">{tool.description || tool.desc || '—'}</p>
         </div>
         <div className="page-actions">
           <span className="muted" style={{ fontSize: 12 }}>
-            <b className="mono">{fmtNum(tool.calls_24h)}</b> calls / 24h
-            <span className="tertiary"> · </span>
-            <b className="mono">{fmtDuration(tool.p50)}</b> p50
+            {tool.calls_24h != null && <><b className="mono">{fmtNum(tool.calls_24h)}</b> calls / 24h</>}
+            {tool.calls_24h != null && tool.p50 != null && <span className="tertiary"> · </span>}
+            {tool.p50 != null && <><b className="mono">{fmtDuration(tool.p50)}</b> p50</>}
           </span>
         </div>
       </div>
@@ -147,7 +224,7 @@ function ToolDetailPane({ tool, toast, onNav }) {
 
       <div style={{ marginTop: 16 }}>
         {tab === 'try' && <ToolPlayground tool={tool} toast={toast}/>}
-        {tab === 'schema' && <ToolSchema schema={tool.schema || { type: 'object', properties: {} }}/>}
+        {tab === 'schema' && <ToolSchema schema={tool.input_schema || tool.schema || { type: 'object', properties: {} }}/>}
         {tab === 'recent' && <ToolRecentCalls tool={tool} onNav={onNav}/>}
       </div>
     </div>
@@ -155,7 +232,7 @@ function ToolDetailPane({ tool, toast, onNav }) {
 }
 
 function ToolPlayground({ tool, toast }) {
-  const schema = tool.schema || { type: 'object', properties: {} };
+  const schema = tool.input_schema || tool.schema || { type: 'object', properties: {} };
   const initial = {};
   Object.entries(schema.properties || {}).forEach(([k, v]) => {
     if (v.default !== undefined) initial[k] = v.default;
@@ -379,38 +456,51 @@ function SchemaNode({ name, schema, required = [], root }) {
 }
 
 function ToolRecentCalls({ tool, onNav }) {
-  const calls = AUDIT.filter(a => a.tool === tool.name).slice(0, 30);
+  const q = useAudit({ tool_name: tool.name, per_page: 30 });
   return (
-    <div className="card">
-      <div className="card-head"><div className="card-title">Recent invocations · last 30</div></div>
-      <div className="table-wrap">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th style={{ width: 28 }}></th>
-              <th>Time</th>
-              <th style={{ width: 70 }} className="num">Status</th>
-              <th style={{ width: 80 }} className="num">Duration</th>
-              <th>Actor</th>
-              <th style={{ width: 120 }}>Audit ID</th>
-            </tr>
-          </thead>
-          <tbody>
-            {calls.map(a => (
-              <tr key={a.id} onClick={() => document.dispatchEvent(new CustomEvent('app:open-audit', { detail: a.id }))}>
-                <td><StatusDot status={a.status === 200 ? 'ok' : 'err'}/></td>
-                <td className="mono tertiary" style={{ fontSize: 11.5 }}>{fmtRelative(a.ts)}</td>
-                <td><span className={`badge mono ${a.status === 200 ? 'ok' : a.status >= 500 ? 'err' : 'warn'}`}>{a.status}</span></td>
-                <td className="num">{fmtDuration(a.dur)}</td>
-                <td className="muted truncate" style={{ maxWidth: 180 }}>{a.actor}</td>
-                <td><span className="id-link">{a.id.slice(0, 14)}…</span></td>
-              </tr>
-            ))}
-            {calls.length === 0 && <tr><td colSpan={6}><EmptyState title="No calls yet" body="This tool hasn't been invoked recently."/></td></tr>}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <DataState
+      query={q}
+      testIdBase="tool-recent-calls"
+      isEmpty={(data) => !data || data.length === 0}
+      empty={{ icon: <I.Clock size={26}/>, title: 'No calls yet', body: "This tool hasn't been invoked recently." }}
+      ready={(calls) => (
+        <div className="card">
+          <div className="card-head"><div className="card-title">Recent invocations · last 30</div></div>
+          <div className="table-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th style={{ width: 28 }}></th>
+                  <th>Time</th>
+                  <th style={{ width: 70 }} className="num">Status</th>
+                  <th style={{ width: 80 }} className="num">Duration</th>
+                  <th>Actor</th>
+                  <th style={{ width: 120 }}>Audit ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                {calls.map(a => {
+                  const statusNum = Number(a.status);
+                  const ts = a.created_at ? new Date(a.created_at).getTime() : a.ts;
+                  const dur = a.duration_ms ?? a.dur;
+                  return (
+                    <tr key={a.id} onClick={() => document.dispatchEvent(new CustomEvent('app:open-audit', { detail: a.id }))}
+                        data-testid={`tool-recent-calls-row-${a.id}`}>
+                      <td><StatusDot status={statusNum === 200 ? 'ok' : 'err'}/></td>
+                      <td className="mono tertiary" style={{ fontSize: 11.5 }}>{fmtRelative(ts)}</td>
+                      <td><span className={`badge mono ${statusNum === 200 ? 'ok' : statusNum >= 500 ? 'err' : 'warn'}`}>{a.status}</span></td>
+                      <td className="num">{fmtDuration(dur)}</td>
+                      <td className="muted truncate" style={{ maxWidth: 180 }}>{a.actor}</td>
+                      <td><span className="id-link">{String(a.id).slice(0, 14)}…</span></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    />
   );
 }
 
