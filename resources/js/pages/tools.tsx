@@ -318,9 +318,24 @@ function ToolPlayground({ tool, toast }) {
       toast.push({ kind: 'ok', title: `${tool.name} succeeded`, body: `${dur}ms` });
     } catch (err) {
       if (err instanceof ConfirmTokenError) {
-        // R21 first leg: open confirm modal with the server-minted token.
+        // R21 second-leg failure: the operator already typed the confirm
+        // phrase and we sent `confirmToken`, but the server still rejected
+        // (token expired past `expires_in`, was already consumed by another
+        // tab, or simply invalid). Without a FRESH mint we have no token
+        // to retry with, so re-opening the modal would loop forever on the
+        // same stale state. Surface as a hard failure instead.
+        const freshMint = err.confirmTokenMint?.confirm_token;
+        if (confirmToken && !freshMint) {
+          const msg = err.message
+            || `Confirmation token rejected (${err.reason || 'invalid'}). Click Run again to start a new confirmation.`;
+          setResp({ status: err.status || 422, dur: 0, audit_id: '—', body: { error: msg, code: 'confirmation_invalid', reason: err.reason } });
+          toast.push({ kind: 'err', title: `${tool.name} failed`, body: msg });
+          return;
+        }
+        // R21 first leg (or second leg that the server re-minted): open
+        // confirm modal with the server-minted token.
         setPendingConfirm({
-          token: err.confirmTokenMint?.confirm_token,
+          token: freshMint,
           expires_in: err.confirmTokenMint?.expires_in,
           reason: err.reason,
         });

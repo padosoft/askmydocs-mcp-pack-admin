@@ -5,6 +5,31 @@ The project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased] → v1.1.0
 
+### Fixed — W4 iter-2 review (Codex P2 — expired confirm-token loop)
+
+`ToolPlayground`, `AuditDrilldown::Replay`, and `BreakersPage::Reset` all
+follow the R21 two-call confirm-token pattern: first call without a
+token surfaces `ConfirmTokenError` carrying a server-minted token; the
+operator types the confirm phrase; the second call carries that token.
+
+Codex flagged the failure mode where the second-leg call ALSO throws
+`ConfirmTokenError` — typically because the operator waited past
+`expires_in` before confirming, so the server rejected the now-stale
+token. The original code unconditionally re-opened the modal with
+`err.confirmTokenMint?.confirm_token` (which may be `null` if the
+server can't auto-mint for an invalid request), creating an infinite
+re-confirm loop with an undefined token.
+
+All three sites now distinguish: if `confirmToken` was already supplied
+AND the new error doesn't carry a fresh mint, surface a hard failure
+toast (and inline error response in `ToolPlayground`) telling the
+operator to click the action again to start a new confirmation; do NOT
+reopen the modal. First-leg path is unchanged.
+
+New spec in `tests/js/pages/tools-invoke.test.tsx` pins the guard by
+asserting `calls.length === 2` after the expired-token rejection so
+the loop bug can't regress silently.
+
 ### Added — Write-paths + SSE (W4)
 
 Every non-GET admin action now calls a real mutation hook against the

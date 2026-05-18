@@ -282,7 +282,20 @@ function AuditDrilldown({ auditId, onClose, toast }) {
       toast.push({ kind: 'ok', title: 'Replay queued', body: `Re-invoking ${detail.tool} with original arguments…`, action: { label: 'View audit', onClick: () => undefined } });
     } catch (err) {
       if (err instanceof ConfirmTokenError) {
-        setPendingReplayToken(err.confirmTokenMint?.confirm_token ?? null);
+        // R21 second-leg expired-token guard: if we already sent a token
+        // and the server didn't re-mint, treat it as a hard failure to
+        // avoid an infinite re-confirm loop (operator must click Replay
+        // again to start fresh).
+        const freshMint = err.confirmTokenMint?.confirm_token ?? null;
+        if (confirmToken && !freshMint) {
+          toast.push({ kind: 'err', title: 'Replay failed',
+            body: err.message
+              || `Confirmation token rejected (${err.reason || 'invalid'}). Click Replay again to start a new confirmation.` });
+          setShowReplay(false);
+          setPendingReplayToken(null);
+          return;
+        }
+        setPendingReplayToken(freshMint);
         setShowReplay(true);
         return;
       }
@@ -533,9 +546,22 @@ function BreakersPage({ onNav, toast }) {
       setPendingResetToken(null);
     } catch (err) {
       if (err instanceof ConfirmTokenError) {
+        // R21 second-leg expired-token guard: if we already sent a token
+        // and the server didn't re-mint, treat it as a hard failure to
+        // avoid an infinite re-confirm loop (operator must click Reset
+        // again to start fresh).
+        const freshMint = err.confirmTokenMint?.confirm_token ?? null;
+        if (confirmToken && !freshMint) {
+          toast.push({ kind: 'err', title: 'Reset failed',
+            body: err.message
+              || `Confirmation token rejected (${err.reason || 'invalid'}). Click Reset again to start a new confirmation.` });
+          setResetting(null);
+          setPendingResetToken(null);
+          return;
+        }
         // R21 first leg — stash the mint and let the modal flip into
         // type-to-confirm mode for the second leg.
-        setPendingResetToken(err.confirmTokenMint?.confirm_token ?? null);
+        setPendingResetToken(freshMint);
         return;
       }
       toast.push({ kind: 'err', title: 'Reset failed', body: (err && err.message) || 'Unknown error' });

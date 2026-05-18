@@ -95,6 +95,55 @@ describe('ToolPlayground — R21 two-call confirm-token protocol', () => {
     expect(screen.getAllByRole('textbox').length).toBe(1);
   });
 
+  it('second-leg ConfirmTokenError without fresh mint surfaces hard failure (no infinite loop)', async () => {
+    // R21: operator waits past expires_in before typing the phrase, so
+    // the second-leg call comes in with a stale token. Server returns
+    // 422 confirmation_invalid WITHOUT a fresh mint (Mate cannot
+    // auto-mint for an invalid request). The playground must surface
+    // the failure as a toast/inline error, NOT re-open the modal with
+    // an undefined token (which would loop forever).
+    seedToolsList();
+    const calls: Array<{ body: any }> = [];
+    server.use(
+      http.post(`${BASE}/servers/srv_d/tools/delete-all/invoke`, async ({ request }) => {
+        const body = await request.json();
+        calls.push({ body });
+        if (!(body as any).confirm_token) {
+          // First leg: mint a token (will go stale by the second leg).
+          return HttpResponse.json({ confirm_token: 'tok_stale', expires_in: 60 }, { status: 202 });
+        }
+        // Second leg: reject the stale token — no fresh confirm_token
+        // in the response, so the FE has nothing to retry with.
+        return HttpResponse.json({
+          error: { code: 'confirmation_invalid', message: 'Token expired.' },
+        }, { status: 422 });
+      }),
+    );
+
+    const push = vi.fn();
+    renderWithProviders(<ToolsPage onNav={noop} toast={{ push }} />);
+    await waitFor(() => expect(screen.getByTestId('tools-ready')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('tools-playground-invoke'));
+    await waitFor(() => expect(calls.length).toBe(1));
+
+    // Operator types phrase + submits → second-leg POST with stale token.
+    await waitFor(() => expect(screen.getAllByRole('textbox').length).toBeGreaterThan(1));
+    const inputs = screen.getAllByRole('textbox');
+    fireEvent.change(inputs[inputs.length - 1], { target: { value: 'invoke-delete-all' } });
+    const buttons = screen.getAllByRole('button', { name: /invoke tool/i });
+    const danger = buttons.find((b) => (b as HTMLElement).className.includes('danger'));
+    fireEvent.click(danger || buttons[buttons.length - 1]);
+
+    await waitFor(() => expect(calls.length).toBe(2));
+
+    // Hard failure toast, NOT a loop. Calls must stop at 2.
+    await waitFor(() => expect(push).toHaveBeenCalledWith(expect.objectContaining({ kind: 'err', title: expect.stringContaining('failed') })));
+    // Give the loop-bug time to manifest if the guard is broken.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(calls.length).toBe(2);
+  });
+
   it('422 ValidationError surfaces field errors inline', async () => {
     seedToolsList();
     server.use(
