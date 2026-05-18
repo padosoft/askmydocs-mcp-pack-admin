@@ -5,6 +5,98 @@ The project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased] → v1.1.0
 
+### Added — Write-paths + SSE (W4)
+
+Every non-GET admin action now calls a real mutation hook against the
+host backend. The synthetic prototype simulator that previously powered
+the live feed has been retired in favour of a real `subscribeEvents()`
+EventSource consumer.
+
+- **`pages/servers.tsx` → `ServersListPage`** — the bulk-bar now wires
+  `useDeleteServer` (delete N), `useUpdateServer` (enable/disable N) and
+  `useHandshake` (re-handshake N). Each fan-out uses `Promise.allSettled`
+  so a partial failure surfaces as a single mixed toast rather than
+  swallowing the partial success. Selection clears immediately on
+  delete-confirm (optimistic UX); the row removal happens via
+  `keys.servers.all()` invalidation inside the hook.
+  Testids: `servers-bulk-delete`, `servers-bulk-enable`,
+  `servers-bulk-disable`, `servers-bulk-handshake`.
+- **`pages/servers.tsx` → `ServerDetailPage`** — the page header's
+  Handshake / Enable-Disable / Delete actions now call real mutations.
+  Failures surface as toasts; the existing TypeToConfirmModal still
+  guards the delete path.
+  Testids: `server-detail-handshake`, `server-detail-toggle-enabled`,
+  `server-detail-delete`.
+- **`pages/servers.tsx` → `ServerNewPage`** — wizard submit calls
+  `useCreateServer`. Wire payload is `{ name, transport, url, enabled }`
+  (the wire `McpServerWrite` shape — extra wizard knobs like headers /
+  CB threshold are intentionally dropped until the BE accepts them).
+  `ValidationError` jumps the wizard back to the step that owns the
+  failing field and surfaces inline errors. Testid:
+  `servers-new-submit`.
+- **`pages/tools.tsx` → `ToolPlayground`** — the Try-it button now
+  calls `useInvokeTool` with the R21 two-call confirm-token protocol:
+  first POST without a token; if the BE returns 202 the playground
+  catches `ConfirmTokenError` and opens a `TypeToConfirmModal` with
+  the typed phrase `invoke-{toolName}`; on confirmation the second
+  POST carries the server-minted token (never a client-invented one).
+  `ValidationError` field errors render inline under the args form.
+  Testids: `tools-playground-invoke`,
+  `tools-playground-field-errors`,
+  `tools-playground-error-{key}`.
+- **`pages/audit.tsx` → `AuditDrilldown`** — the drawer's Replay
+  button now calls `useReplayAudit` with the same R21 two-call protocol.
+  Testid: `audit-drilldown-replay`.
+- **`pages/audit.tsx` → `BreakersPage`** — the Reset button now calls
+  `useResetBreaker`. The existing simple confirm modal fires the
+  first-leg call; on 202 the modal flips into a `TypeToConfirmModal`
+  for the second leg. Testid: `breakers-reset-confirm`.
+- **`App.tsx` — live feed** — the prototype's `setInterval`-driven
+  synthetic event simulator has been replaced with a single
+  `subscribeEvents()` subscription on mount. A `livePausedRef` lets the
+  Pause/Resume toggle drop events WITHOUT tearing down the
+  EventSource. Events are deduped by id (R25 spirit) and kept to a
+  rolling 200 buffer. Tear-down on component unmount.
+
+**Cross-cutting invariants reinforced:**
+
+- R14 — every mutation surfaces failures via toast; ValidationError
+  shows field-level errors next to inputs; AuthExpiredError still
+  fires the global `auth:expired` event.
+- R21 — destructive mutations use the exact two-call protocol. The
+  first call is made WITHOUT a token; the second uses ONLY the
+  server-minted token surfaced via `ConfirmTokenError.confirmTokenMint`.
+- R11 / R29 — every new action button + modal sub-element carries a
+  stable `<feature>-<resource>-<id?>-<action[-substep]>` testid.
+
+**Test coverage added (~21 new specs across 5 files):**
+
+- `tests/js/pages/servers-mutations.test.tsx` — bulk delete, bulk
+  enable, partial-failure toast, detail-page delete + handshake,
+  wizard happy path, wizard 422 jumps to step 1, wizard 401 fires
+  the global auth-expired event.
+- `tests/js/pages/tools-invoke.test.tsx` — R21 first-call (no token) →
+  202 → TypeToConfirm → second call with token; 200 first-call skip;
+  422 ValidationError surfaces inline.
+- `tests/js/pages/audit-replay.test.tsx` — R21 two-call protocol on
+  replay; 200 happy path; 500 failure toast.
+- `tests/js/pages/breakers-reset.test.tsx` — 200 first-call resets
+  without TypeToConfirm; R21 two-call protocol on 202; 500 failure
+  toast.
+- `tests/js/pages/dashboard-sse.test.tsx` — SSE consumer opens
+  EventSource on mount, dispatches events into state, dedupes by id,
+  drops events while paused without disconnecting, tears down on
+  unmount.
+
+**Excluded from this wave (carried to v1.2):**
+
+- Settings page API-key sub-section — the `useCreateApiKey` /
+  `useRevokeApiKey` hooks exist but `pages/misc.tsx::SettingsPage`
+  still renders fixtures; wiring is small enough to land standalone.
+- E2E Playwright coverage — the fixture-drift between the SPA's wire
+  expectations and the real `mcp-pack` v1.4 endpoint shapes is the W5
+  cleanup wave.
+
 ### Added — Read-paths wired (W3)
 
 The 8 read-path page surfaces in `resources/js/pages/` now consume the W2
