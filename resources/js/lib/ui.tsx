@@ -216,7 +216,7 @@ function ToastProvider({ children }) {
       {children}
       <div className="toast-stack">
         {toasts.map(t => (
-          <div key={t.id} className={`toast ${t.kind || 'ok'}`}>
+          <div key={t.id} className={`toast ${t.kind || 'ok'}`} data-testid={t.testId}>
             <span className="toast-icon">{icons[t.kind || 'ok']}</span>
             <div className="toast-body">
               <b>{t.title}</b>

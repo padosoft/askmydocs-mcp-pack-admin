@@ -48,10 +48,23 @@ function NavBridge({ children }: { children: (nav: (p: string) => void) => any }
   return children(nav);
 }
 
+// Iter-2 fix (W2 Copilot iter-1): module-scoped flag for
+// `auth:expired` toast dedupe. A stale Sanctum cookie can fire
+// dozens of 401s in seconds as TanStack Query retries queued
+// requests; without this flag every retry would stack a fresh
+// toast. The flag resets on page reload (the user's recovery path).
+let authExpiredToastShown = false;
+
 function Shell() {
   const navigate = useNavigate();
   const location = useLocation();
   const toast = useToast();
+  // Destructure the stable `push` callback so the `useEffect` below
+  // can depend on it WITHOUT re-running on every Toast-provider
+  // re-render (the provider returns a fresh `{ push, dismiss }`
+  // object on every render — depending on `toast` made the effect
+  // re-register every document listener too aggressively).
+  const { push } = toast;
 
   const [theme, setTheme] = React.useState<string>(() => {
     // Precedence: per-user override (localStorage) > host operator default
@@ -159,19 +172,47 @@ function Shell() {
     };
     const onNavEvt = (e: any) => nav(e.detail);
     const onOpenAudit = (e: any) => nav('audit/' + e.detail);
+    // Iter-2 fix: actually deduplicate session-expired toasts.
+    // Previously this comment claimed dedupe but the body just
+    // pushed a new toast on every 401; a stale Sanctum cookie can
+    // fire dozens of 401s in seconds as TanStack Query retries
+    // queued requests, stacking dozens of identical toasts. The
+    // module-scoped flag ensures at most one toast per event burst —
+    // user reloads to recover, the next page-load resets the flag.
+    const onAuthExpired = () => {
+      if (authExpiredToastShown) {
+        return;
+      }
+      authExpiredToastShown = true;
+      push({
+        kind: 'err',
+        title: 'Session expired',
+        body: 'Please reload the page to sign in again.',
+        testId: 'auth-expired-toast',
+      });
+    };
     document.addEventListener('app:toggle-theme', onToggleTheme as any);
     document.addEventListener('app:toggle-paused', onTogglePaused as any);
     document.addEventListener('app:start-tour', onStartTour as any);
     document.addEventListener('app:nav', onNavEvt as any);
     document.addEventListener('app:open-audit', onOpenAudit as any);
+    document.addEventListener('auth:expired', onAuthExpired as any);
     return () => {
       document.removeEventListener('app:toggle-theme', onToggleTheme as any);
       document.removeEventListener('app:toggle-paused', onTogglePaused as any);
       document.removeEventListener('app:start-tour', onStartTour as any);
       document.removeEventListener('app:nav', onNavEvt as any);
       document.removeEventListener('app:open-audit', onOpenAudit as any);
+      document.removeEventListener('auth:expired', onAuthExpired as any);
     };
-  }, [nav]);
+    // Iter-2 fix: depend on `push` (the stable callback inside the
+    // `toast` object) NOT the `toast` object itself. The Toast
+    // provider returns a fresh `{ push, dismiss }` instance on
+    // every render — depending on `toast` would re-register every
+    // listener on every parent render, hurting perf + risking
+    // duplicate listener fires during the brief window before the
+    // cleanup runs.
+  }, [nav, push]);
 
   const route = routeKeyFromPath(location.pathname);
   const topRoute =
