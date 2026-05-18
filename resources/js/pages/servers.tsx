@@ -34,9 +34,22 @@ function ServersListPage({ onNav, toast }) {
   const [confirmDelete, setConfirmDelete] = React.useState(null);
 
   const filters = React.useMemo(() => {
+    // The UI status chips are an OPERATOR view (`active` = enabled & not
+    // erroring; `disabled` = enabled flag false; `err` / `warn` = real
+    // wire status values). The BE only understands the latter two as
+    // `status=` — `active` / `disabled` are projections we have to do
+    // client-side. Sending `status=active` to the BE returns zero rows
+    // (no server reports `status=active`), so the chip would look
+    // permanently broken. Only forward the wire-shaped values; let
+    // `disabled` map to `enabled=false` and let `active` fall through
+    // to client-side filtering below.
     const f = { per_page: 100 };
     if (q) f.q = q;
-    if (statusFilter !== 'all') f.status = statusFilter;
+    if (statusFilter === 'err' || statusFilter === 'warn') {
+      f.status = statusFilter;
+    } else if (statusFilter === 'disabled') {
+      f.enabled = false;
+    }
     if (transportFilter !== 'all') f.transport = transportFilter;
     return f;
   }, [q, statusFilter, transportFilter]);
@@ -250,20 +263,22 @@ function ServersListPage({ onNav, toast }) {
                 );
               })}
               {filtered.length === 0 && (
-                <tr><td colSpan={10} data-testid="servers-empty">
-                  <EmptyState
-                    icon={<I.Server size={26}/>}
-                    title={rawServers.length === 0 ? 'No servers yet' : 'No servers match your filters'}
-                    body={rawServers.length === 0
-                      ? 'Register your first MCP server to get started.'
-                      : 'Try clearing some filters or registering a new server.'}
-                    action={rawServers.length === 0
-                      ? <button className="btn primary" onClick={() => onNav('servers-new')}><I.Plus size={12}/>New server</button>
-                      : <button className="btn" onClick={() => { setStatusFilter('all'); setTransportFilter('all'); setQ(''); }}>Clear filters</button>}
-                    secondary={rawServers.length > 0
-                      ? <button className="btn primary" onClick={() => onNav('servers-new')}><I.Plus size={12}/>New server</button>
-                      : null}
-                  />
+                <tr><td colSpan={10}>
+                  <div role="status" aria-live="polite" data-testid="servers-empty">
+                    <EmptyState
+                      icon={<I.Server size={26}/>}
+                      title={rawServers.length === 0 ? 'No servers yet' : 'No servers match your filters'}
+                      body={rawServers.length === 0
+                        ? 'Register your first MCP server to get started.'
+                        : 'Try clearing some filters or registering a new server.'}
+                      action={rawServers.length === 0
+                        ? <button className="btn primary" onClick={() => onNav('servers-new')}><I.Plus size={12}/>New server</button>
+                        : <button className="btn" onClick={() => { setStatusFilter('all'); setTransportFilter('all'); setQ(''); }}>Clear filters</button>}
+                      secondary={rawServers.length > 0
+                        ? <button className="btn primary" onClick={() => onNav('servers-new')}><I.Plus size={12}/>New server</button>
+                        : null}
+                    />
+                  </div>
                 </td></tr>
               )}
             </tbody>

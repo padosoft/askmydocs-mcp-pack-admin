@@ -97,6 +97,24 @@ describe('<DataState>', () => {
     expect(screen.queryByTestId('foo-empty')).not.toBeInTheDocument();
   });
 
+  it('wraps the ready branch in a sentinel with data-testid="<base>-ready"', () => {
+    // The header comment advertises an R11 testid contract on the
+    // ready branch; this test pins that contract so future refactors
+    // can't silently drop it.
+    render(
+      <DataState
+        query={makeQuery({ data: [{ id: 'a' }] })}
+        testIdBase="foo"
+        isEmpty={(d: any[]) => d.length === 0}
+        ready={() => <div data-testid="foo-ready-body">payload</div>}
+      />,
+    );
+    const sentinel = screen.getByTestId('foo-ready');
+    expect(sentinel).toBeInTheDocument();
+    expect(sentinel).toHaveAttribute('role', 'presentation');
+    expect(sentinel).toContainElement(screen.getByTestId('foo-ready-body'));
+  });
+
   it('treats undefined data as empty even without an `isEmpty` predicate', () => {
     render(
       <DataState

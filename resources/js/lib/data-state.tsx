@@ -17,8 +17,11 @@
 //      visible loading affordance, an error message + retry, or an empty
 //      state. Loading shows `aria-busy`; error uses `role="alert"`; empty
 //      uses `role="status"`.
-// R11: the wrapper attaches `data-testid="<base>-loading|error|empty"` so
-//      Playwright + Vitest can wait on them without sniffing internal markup.
+// R11: the wrapper attaches `data-testid="<base>-loading|error|empty|ready"`
+//      on each of the four states so Playwright + Vitest can wait on them
+//      without sniffing internal markup. The `-ready` wrapper is a thin
+//      `<div role="presentation">` so it doesn't introduce an extra a11y
+//      landmark — its only job is to give tests a stable hook.
 // R15: keyboard-reachable retry button + meaningful labels on each state.
 
 import React from 'react';
@@ -112,9 +115,19 @@ export function DataState<TData>({
     );
   }
 
-  // React fragment cast so JSX.Element is satisfied; `ready` may return any
-  // ReactNode and React's render typings accept fragments.
-  return <>{ready(data)}</>;
+  // Wrap the ready render in a sentinel div carrying `data-testid="<base>-ready"`
+  // so test code can wait on the successful state symmetrically with the
+  // loading/error/empty states. `role="presentation"` keeps the wrapper
+  // out of the a11y tree.
+  return (
+    <div
+      className="data-state ready"
+      role="presentation"
+      data-testid={`${testIdBase}-ready`}
+    >
+      {ready(data)}
+    </div>
+  );
 }
 
 function DefaultLoadingSkeleton(): JSX.Element {

@@ -206,17 +206,19 @@ function AuditPage({ onNav, onOpenAudit, initialAuditId }) {
                 );
               })}
               {filtered.length === 0 && (
-                <tr><td colSpan={9} data-testid="audit-empty">
-                  <EmptyState
-                    icon={<I.Scroll size={26}/>}
-                    title={rawRows.length === 0 ? 'No audit rows yet' : 'No rows match your filters'}
-                    body={rawRows.length === 0
-                      ? 'Invoke a tool to generate audit history.'
-                      : 'Try widening the filters or selecting a different time window.'}
-                    action={rawRows.length > 0
-                      ? <button className="btn" onClick={clearFilters}>Clear filters</button>
-                      : <button className="btn primary" onClick={() => onNav('tools')}><I.Play size={12}/>Open tools</button>}
-                  />
+                <tr><td colSpan={9}>
+                  <div role="status" aria-live="polite" data-testid="audit-empty">
+                    <EmptyState
+                      icon={<I.Scroll size={26}/>}
+                      title={rawRows.length === 0 ? 'No audit rows yet' : 'No rows match your filters'}
+                      body={rawRows.length === 0
+                        ? 'Invoke a tool to generate audit history.'
+                        : 'Try widening the filters or selecting a different time window.'}
+                      action={rawRows.length > 0
+                        ? <button className="btn" onClick={clearFilters}>Clear filters</button>
+                        : <button className="btn primary" onClick={() => onNav('tools')}><I.Play size={12}/>Open tools</button>}
+                    />
+                  </div>
                 </td></tr>
               )}
             </tbody>
@@ -234,6 +236,28 @@ function AuditPage({ onNav, onOpenAudit, initialAuditId }) {
   );
 }
 
+// Map a wire `AuditDetail` (snake_case BE shape) onto the legacy
+// fixture-shaped keys the drawer renders below. Without this, the
+// drilldown silently mixed the fixture's `server` / `tool` / `dur` /
+// `ts` with the live row's `mcp_server_name` / `tool_name` /
+// `duration_ms` / `created_at`, so operators saw misleading metadata
+// (the seed server name attached to a real audit id). Re-projects only
+// the load-bearing primitives; sparse meta/timeline/headers still fall
+// through to the fixture via the spread merge below until the BE emits
+// them, which is what the fixture-banner warns the operator about.
+function projectWireAuditDetail(live) {
+  if (!live) return null;
+  const ts = live.created_at ? new Date(live.created_at).getTime() : live.ts;
+  return {
+    ...live,
+    server: live.mcp_server_name || live.mcp_server_id || live.server,
+    tool: live.tool_name || live.tool,
+    dur: live.duration_ms ?? live.dur,
+    ts: ts || live.ts,
+    tenant: live.tenant_id || live.tenant,
+  };
+}
+
 // Audit drilldown drawer content
 function AuditDrilldown({ auditId, onClose, toast }) {
   const [tab, setTab] = React.useState('request');
@@ -242,7 +266,7 @@ function AuditDrilldown({ auditId, onClose, toast }) {
   // `timeline` / `headers` / `meta` until the BE emits them. Merge with the
   // fixture so the drawer still renders a useful narrative — flagged in the
   // banner when the auditId doesn't match the fixture id.
-  const live = detailQ.data;
+  const live = projectWireAuditDetail(detailQ.data);
   const detail = live ? { ...FALLBACK_AUDIT_DETAIL, ...live } : FALLBACK_AUDIT_DETAIL;
   const [showReplay, setShowReplay] = React.useState(false);
 

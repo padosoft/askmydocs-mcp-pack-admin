@@ -236,9 +236,9 @@ function ResourcesPage({ onNav }) {
                   <MarkdownRender source={content}/>
                 )}
                 {!contentQ.isLoading && !contentQ.isError && previewTab === 'rendered' && content && selected.mime === 'application/json' && (
-                  <pre className="code-block" dangerouslySetInnerHTML={{ __html: jsonHighlight(JSON.parse(content || '{}')) }}/>
+                  <JsonPreview source={content}/>
                 )}
-                {previewTab === 'rendered' && !content && (
+                {!contentQ.isLoading && !contentQ.isError && previewTab === 'rendered' && !content && (
                   <EmptyState icon={<I.File size={20}/>}
                               title="No preview"
                               body={`This is a ${selected.mime} resource. Switch to Raw or Hex to inspect contents.`}/>
@@ -279,9 +279,28 @@ function ResourcesPage({ onNav }) {
   );
 }
 
+// HTML-escape every char that could break out of an HTML attribute or
+// open a new tag. MUST run BEFORE the markdown regexes so any raw HTML
+// embedded in server-controlled Markdown (`<script>`, `<img onerror=…>`)
+// is rendered as literal text, not executed. The markdown-to-HTML
+// regexes inject their own (safe) tags into the already-escaped string;
+// since `<` / `>` in untrusted content are already `&lt;` / `&gt;`, the
+// renderer cannot be tricked into emitting an executable tag.
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function MarkdownRender({ source }) {
-  // Minimal MD renderer (headings, bold, code, lists, tables)
-  const html = source
+  // Minimal MD renderer (headings, bold, code, lists, tables).
+  // Escape first — see `escapeHtml` comment above for the security
+  // rationale (R14: never feed unsanitized server content into
+  // `dangerouslySetInnerHTML`).
+  const html = escapeHtml(source)
     .replace(/^### (.*$)/gm, '<h3 style="margin:18px 0 8px;font-size:15px;font-weight:600">$1</h3>')
     .replace(/^## (.*$)/gm, '<h2 style="margin:22px 0 8px;font-size:17px;font-weight:600">$1</h2>')
     .replace(/^# (.*$)/gm, '<h1 style="margin:0 0 14px;font-size:22px;font-weight:700;letter-spacing:-0.02em">$1</h1>')
@@ -297,6 +316,26 @@ function MarkdownRender({ source }) {
     .replace(/\n\n/g, '</p><p style="margin:10px 0">')
     .replace(/^([^<].*)$/gm, (m) => /<\/?(h\d|li|table|tr|pre|p|code|td)/.test(m) ? m : `<p style="margin:8px 0;line-height:1.65">${m}</p>`);
   return <div style={{ fontSize: 13.5, lineHeight: 1.65 }} dangerouslySetInnerHTML={{ __html: html }}/>;
+}
+
+// `JsonPreview` guards `JSON.parse` so a malformed wire payload renders
+// an error banner instead of crashing the whole Resources page (R14).
+function JsonPreview({ source }) {
+  let parsed;
+  try {
+    parsed = JSON.parse(source || '{}');
+  } catch (err) {
+    return (
+      <div role="alert" data-testid="resource-content-json-error">
+        <EmptyState
+          icon={<I.AlertTriangle size={20}/>}
+          title="Invalid JSON"
+          body={`The server returned a payload that isn't valid JSON: ${err?.message || String(err)}. Switch to Raw to inspect the bytes.`}
+        />
+      </div>
+    );
+  }
+  return <pre className="code-block" dangerouslySetInnerHTML={{ __html: jsonHighlight(parsed) }}/>;
 }
 
 // ============== Prompts library ==============

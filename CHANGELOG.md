@@ -110,6 +110,59 @@ Total Vitest count: 66 → 131 tests, 5 → 17 files. `npm test` +
   resolution (R30). Every hook delegates to `endpoints.ts` which uses
   the shared `request()` helper from `lib/api/client.ts`.
 
+### Fixed — W3 iter-2 review (Copilot + Codex)
+
+Addresses six findings from automated review on PR #7:
+
+- **`pages/resources.tsx` (P1 / XSS)** — `MarkdownRender` now HTML-escapes
+  the server-controlled source string BEFORE running the markdown-to-HTML
+  regex chain. A malicious or compromised MCP server can no longer execute
+  scripts in the admin UI by advertising a `text/markdown` resource that
+  contains raw HTML (`<script>`, `<img onerror=…>`, etc.). The escape
+  happens once at the top of the regex pipeline; markdown-injected tags
+  (`<h1>`, `<pre>`, `<code>`, `<table>`, `<tr>`, `<td>`, `<p>`) are
+  emitted by the replacement strings themselves and remain safe.
+- **`pages/resources.tsx` (JSON.parse crash)** — extracted the JSON
+  rendered-preview branch into a dedicated `<JsonPreview>` component
+  that wraps `JSON.parse` in try/catch. A malformed wire payload now
+  surfaces an inline error banner with `data-testid="resource-content-json-error"`
+  + `role="alert"` instead of throwing through React and unmounting the
+  entire Resources page.
+- **`pages/resources.tsx` (state co-render)** — gated the "No preview"
+  empty-state branch on `!contentQ.isLoading && !contentQ.isError` so
+  loading/error/empty are mutually exclusive (previously the empty
+  could render alongside loading skeletons).
+- **`pages/audit.tsx` (wire field mapping)** — `AuditDrilldown` now
+  projects the wire `AuditDetail` shape (`mcp_server_name`, `tool_name`,
+  `duration_ms`, `created_at`, `tenant_id`) onto the legacy UI keys
+  (`server`, `tool`, `dur`, `ts`, `tenant`) BEFORE the fixture spread
+  merge, via the new `projectWireAuditDetail()` helper. The drawer
+  previously displayed the seeded fixture's server/tool/timestamp for
+  any real audit row whose id didn't happen to match the fixture id —
+  misleading operator metadata. Fixture-banner remains as-is to flag
+  sparse meta/timeline/headers.
+- **`pages/servers.tsx` (BE filter mismatch)** — the operator-facing
+  `active` / `disabled` chips no longer forward as `status=` to the BE.
+  `disabled` is now translated to `enabled=false` (correct wire shape);
+  `active` falls through to client-side filtering only (since no server
+  ever reports `status=active`). `err` / `warn` are forwarded as
+  before because they are real wire status values. Previously the
+  chips returned empty result sets and looked permanently broken.
+- **`pages/servers.tsx` + `pages/audit.tsx` (R15 a11y)** — the
+  in-table empty-state cells now wrap their `EmptyState` in a
+  `<div role="status" aria-live="polite" data-testid="…-empty">`
+  wrapper so screen readers announce them consistently with the
+  other empty-states shipped in W3 (which already lived on
+  divs at the page level).
+- **`lib/data-state.tsx` (R11 ready-testid contract)** — the
+  ready branch now wraps its render in a sentinel
+  `<div role="presentation" data-testid="<base>-ready">` so the
+  R11 testid contract advertised in the header comment is actually
+  honoured for the success state. `role="presentation"` keeps the
+  wrapper out of the a11y tree. A new spec in
+  `tests/js/lib/data-state.test.tsx` pins the sentinel against
+  future refactors.
+
 ### Added — TanStack Query foundation (W2)
 
 The data layer that backs every read + mutation in v1.1. The SPA stays
